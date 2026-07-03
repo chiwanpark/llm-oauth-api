@@ -1,0 +1,6 @@
+allowBuilds:
+  '@google/genai': true
+  esbuild: true
+  protobufjs: true
+minimumReleaseAgeExclude:
+  - '@earendil-works/pi-ai@0.80.2'
