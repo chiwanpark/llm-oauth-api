@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "OpenAI-compatible HTTP API backed by pi-ai OAuth/API-key providers",
+  "license": "Apache-2.0",
   "bin": {
     "llm-oauth-api": "./dist/cli.js"
   },
