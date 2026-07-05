@@ -2,6 +2,19 @@
 
 OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 
+## Disclaimer
+
+> [!CAUTION]
+> This is an unofficial community project and is not affiliated with, endorsed by, or sponsored by any LLM provider.
+>
+> Exposing provider-backed LLM access through a separate OpenAI-compatible API, proxy, or hosted service may be restricted or prohibited by provider terms, acceptable-use policies, or account agreements.
+>
+> Use this project only for personal, local experimentation. Do not offer it as a hosted service, share access with others, pool accounts, resell access, or redistribute provider access in any form.
+>
+> You are solely responsible for understanding and complying with each provider's rules and all applicable laws. Misuse may result in rate limits, billing charges, account suspension, termination, or other enforcement actions.
+>
+> This software is provided as-is, without warranties. You assume all legal, operational, financial, and account-related risks.
+
 ## Supported providers
 
 - `anthropic` (`claude-code`, `claude` aliases)
