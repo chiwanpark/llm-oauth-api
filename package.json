@@ -1,6 +1,6 @@
 {
   "name": "llm-oauth-api",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "OpenAI-compatible HTTP API backed by pi-ai OAuth/API-key providers",
