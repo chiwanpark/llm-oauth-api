@@ -15,8 +15,8 @@ import {
   assistantUsage,
   buildChatContext,
   buildChatPiOptions,
-  buildPiOptions,
   buildResponsesContext,
+  buildResponsesPiOptions,
   createChatCompletionResponse,
   createOpenAIError,
   createOpenAIModelsResponse,
@@ -228,6 +228,19 @@ async function handleResponses(
     return;
   }
 
+  if (body.reasoning?.effort !== undefined && !isReasoningEffort(body.reasoning.effort)) {
+    reply
+      .code(400)
+      .send(
+        createOpenAIError(
+          `\`reasoning.effort\` must be one of: ${REASONING_EFFORTS.join(', ')}`,
+          'invalid_request_error',
+          'invalid_value',
+        ),
+      );
+    return;
+  }
+
   const model = resolveModelByName(models, requestedModel);
   if (!model) {
     reply
@@ -259,7 +272,7 @@ async function handleResponses(
 
     const context = await buildResponsesContext(model, body);
     const signal = createRequestSignal(request, reply);
-    const options = buildPiOptions(body, signal);
+    const options = buildResponsesPiOptions(body, signal);
 
     if (body.stream) {
       await streamResponses(models, model, context, options, reply, request.log);

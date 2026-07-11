@@ -129,9 +129,13 @@ curl http://localhost:3000/v1/responses \
   -d '{
     "model": "openai-codex:gpt-5.4",
     "input": "Write a haiku about OAuth",
+    "reasoning": {"effort": "high"},
     "stream": true
   }'
 ```
+
+For `/v1/responses`, use the Responses API form `reasoning.effort`. It accepts the
+same effort levels listed above.
 
 ## Notes
 

@@ -253,6 +253,13 @@ export function buildChatPiOptions(body: any, signal?: AbortSignal) {
     : options;
 }
 
+export function buildResponsesPiOptions(body: any, signal?: AbortSignal) {
+  const options = buildPiOptions(body, signal);
+  return isReasoningEffort(body.reasoning?.effort)
+    ? { ...options, reasoningEffort: body.reasoning.effort }
+    : options;
+}
+
 function buildTools(rawTools: any, toolChoice: any): Tool[] | undefined {
   if (!Array.isArray(rawTools) || rawTools.length === 0 || toolChoice === 'none') {
     return undefined;
