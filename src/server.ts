@@ -7,6 +7,7 @@ import { JsonCredentialStore } from './credential-store.js';
 import {
   assistantUsage,
   buildChatContext,
+  buildChatPiOptions,
   buildPiOptions,
   buildResponsesContext,
   createChatCompletionResponse,
@@ -14,7 +15,9 @@ import {
   createOpenAIModelsResponse,
   createResponsesResponse,
   exposedModelId,
+  isReasoningEffort,
   mapFinishReason,
+  REASONING_EFFORTS,
   resolveModelByName,
 } from './openai-compat.js';
 import { createSupportedProviders } from './providers.js';
@@ -100,6 +103,19 @@ async function handleChatCompletions(
     return;
   }
 
+  if (body.reasoning_effort !== undefined && !isReasoningEffort(body.reasoning_effort)) {
+    reply
+      .code(400)
+      .send(
+        createOpenAIError(
+          `\`reasoning_effort\` must be one of: ${REASONING_EFFORTS.join(', ')}`,
+          'invalid_request_error',
+          'invalid_value',
+        ),
+      );
+    return;
+  }
+
   const model = resolveModelByName(models, requestedModel);
   if (!model) {
     reply
@@ -131,7 +147,7 @@ async function handleChatCompletions(
 
     const context = await buildChatContext(model, body);
     const signal = createRequestSignal(request, reply);
-    const options = buildPiOptions(body, signal);
+    const options = buildChatPiOptions(body, signal);
 
     if (body.stream) {
       await streamChatCompletions(models, model, context, options, reply);

@@ -109,12 +109,16 @@ curl http://localhost:3000/v1/chat/completions \
   -H "Authorization: Bearer $LLM_OAUTH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "anthropic:claude-sonnet-4-5",
+    "model": "openai-codex:gpt-5.4",
     "messages": [
       {"role": "user", "content": "Hello"}
-    ]
+    ],
+    "reasoning_effort": "medium"
   }'
 ```
+
+`reasoning_effort` accepts `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`.
+Support for individual levels depends on the selected model and provider.
 
 Example streamed responses API call:
 

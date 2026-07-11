@@ -95,7 +95,7 @@ export function assistantUsage(message: AssistantMessage) {
       cached_tokens: message.usage.cacheRead,
     },
     completion_tokens_details: {
-      reasoning_tokens: 0,
+      reasoning_tokens: message.usage.reasoning ?? 0,
     },
   };
 }
@@ -222,6 +222,14 @@ export async function buildResponsesContext(model: Model<any>, body: any): Promi
   return context;
 }
 
+export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+export function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return REASONING_EFFORTS.some((effort) => effort === value);
+}
+
 export function buildPiOptions(body: any, signal?: AbortSignal) {
   return {
     temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
@@ -236,6 +244,13 @@ export function buildPiOptions(body: any, signal?: AbortSignal) {
     signal,
     metadata: typeof body.user === 'string' ? { user_id: body.user } : undefined,
   };
+}
+
+export function buildChatPiOptions(body: any, signal?: AbortSignal) {
+  const options = buildPiOptions(body, signal);
+  return isReasoningEffort(body.reasoning_effort)
+    ? { ...options, reasoningEffort: body.reasoning_effort }
+    : options;
 }
 
 function buildTools(rawTools: any, toolChoice: any): Tool[] | undefined {
@@ -539,7 +554,7 @@ export function createResponsesResponse(model: Model<any>, message: AssistantMes
       output_tokens: message.usage.output,
       total_tokens: message.usage.totalTokens,
       input_tokens_details: { cached_tokens: message.usage.cacheRead },
-      output_tokens_details: { reasoning_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: message.usage.reasoning ?? 0 },
     },
   };
 }
