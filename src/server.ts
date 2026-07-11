@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
-import { createModels, type MutableModels } from '@earendil-works/pi-ai';
-import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
+import {
+  createModels,
+  type AssistantMessage,
+  type Model,
+  type MutableModels,
+  type OAuthCredential,
+  type Provider,
+} from '@earendil-works/pi-ai';
+import Fastify, { type FastifyBaseLogger, type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { JsonCredentialStore } from './credential-store.js';
 import {
@@ -34,7 +41,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   const app = Fastify({ logger: true });
   const models = createModels({ credentials: new JsonCredentialStore(options.authFile) });
   for (const provider of createSupportedProviders(options.providerIds)) {
-    models.setProvider(provider);
+    models.setProvider(withTokenRefreshLogging(provider, app.log));
   }
 
   app.addHook('onRequest', async (request, reply) => {
@@ -59,6 +66,45 @@ export async function startServer(options: ServerOptions): Promise<void> {
   });
 
   await app.listen({ host: options.host, port: options.port });
+}
+
+function withTokenRefreshLogging(provider: Provider, logger: FastifyBaseLogger): Provider {
+  const oauth = provider.auth.oauth;
+  if (!oauth) return provider;
+
+  const refresh = oauth.refresh.bind(oauth);
+  oauth.refresh = async (credential: OAuthCredential) => {
+    logger.warn(
+      {
+        providerId: provider.id,
+        expiredAt: formatTimestamp(credential.expires),
+        expiredByMs: Math.max(0, Date.now() - credential.expires),
+      },
+      'OAuth access token expired; refreshing',
+    );
+
+    try {
+      const refreshed = await refresh(credential);
+      logger.info(
+        {
+          providerId: provider.id,
+          expiresAt: formatTimestamp(refreshed.expires),
+        },
+        'OAuth access token refreshed',
+      );
+      return refreshed;
+    } catch (error) {
+      logger.error({ err: error, providerId: provider.id }, 'OAuth access token refresh failed');
+      throw error;
+    }
+  };
+
+  return provider;
+}
+
+function formatTimestamp(timestamp: number): string {
+  const date = new Date(timestamp);
+  return Number.isNaN(date.getTime()) ? String(timestamp) : date.toISOString();
 }
 
 function isAuthorized(request: FastifyRequest, expectedApiKey: string): boolean {
@@ -150,11 +196,12 @@ async function handleChatCompletions(
     const options = buildChatPiOptions(body, signal);
 
     if (body.stream) {
-      await streamChatCompletions(models, model, context, options, reply);
+      await streamChatCompletions(models, model, context, options, reply, request.log);
       return;
     }
 
     const message = await models.complete(model, context, options);
+    logModelResponse(request.log, model, message);
     if (message.stopReason === 'error' || message.stopReason === 'aborted') {
       reply
         .code(502)
@@ -215,11 +262,12 @@ async function handleResponses(
     const options = buildPiOptions(body, signal);
 
     if (body.stream) {
-      await streamResponses(models, model, context, options, reply);
+      await streamResponses(models, model, context, options, reply, request.log);
       return;
     }
 
     const message = await models.complete(model, context, options);
+    logModelResponse(request.log, model, message);
     if (message.stopReason === 'error' || message.stopReason === 'aborted') {
       reply
         .code(502)
@@ -249,6 +297,7 @@ async function streamChatCompletions(
   context: any,
   options: any,
   reply: FastifyReply,
+  logger: FastifyBaseLogger,
 ) {
   prepareSse(reply);
 
@@ -332,6 +381,7 @@ async function streamChatCompletions(
     }
 
     if (event.type === 'done') {
+      logModelResponse(logger, model, event.message);
       writeSseData(reply, {
         id,
         object: 'chat.completion.chunk',
@@ -347,6 +397,7 @@ async function streamChatCompletions(
     }
 
     if (event.type === 'error') {
+      logModelResponse(logger, model, event.error);
       writeSseData(
         reply,
         createOpenAIError(event.error.errorMessage ?? 'Upstream model error', 'api_error'),
@@ -365,6 +416,7 @@ async function streamResponses(
   context: any,
   options: any,
   reply: FastifyReply,
+  logger: FastifyBaseLogger,
 ) {
   prepareSse(reply);
 
@@ -528,6 +580,7 @@ async function streamResponses(
     }
 
     if (event.type === 'done') {
+      logModelResponse(logger, model, event.message);
       if (assistantItemId != null && assistantOutputIndex != null) {
         writeSseEvent(reply, 'response.output_item.done', {
           type: 'response.output_item.done',
@@ -554,6 +607,7 @@ async function streamResponses(
     }
 
     if (event.type === 'error') {
+      logModelResponse(logger, model, event.error);
       writeSseEvent(reply, 'response.failed', {
         type: 'response.failed',
         response: {
@@ -571,6 +625,30 @@ async function streamResponses(
   }
 
   reply.raw.end();
+}
+
+function logModelResponse(
+  logger: FastifyBaseLogger,
+  model: Pick<Model<any>, 'provider' | 'id'>,
+  message: AssistantMessage,
+): void {
+  logger.info(
+    {
+      model: exposedModelId(model),
+      responseModel: message.responseModel,
+      stopReason: message.stopReason,
+      tokenUsage: {
+        inputTokens: message.usage.input,
+        outputTokens: message.usage.output,
+        reasoningTokens: message.usage.reasoning ?? null,
+        cacheReadTokens: message.usage.cacheRead,
+        cacheWriteTokens: message.usage.cacheWrite,
+        cacheWrite1hTokens: message.usage.cacheWrite1h ?? null,
+        totalTokens: message.usage.totalTokens,
+      },
+    },
+    'Upstream model response',
+  );
 }
 
 function prepareSse(reply: FastifyReply) {
