@@ -1,8 +1,13 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 
 import { createCliAuthCallbacks, confirmOverwrite } from './auth-ui.js';
 import { JsonCredentialStore } from './credential-store.js';
+import {
+  DEFAULT_OAUTH_REFRESH_BEFORE_EXPIRY_MS,
+  DEFAULT_OAUTH_REFRESH_INTERVAL_MS,
+  parseRefreshSeconds,
+} from './oauth-refresh.js';
 import { createSupportedProvider, getSupportedProviderIds } from './providers.js';
 import { startServer } from './server.js';
 
@@ -22,6 +27,23 @@ program
   )
   .option('--port <port>', 'Port to listen on', '3000')
   .option('--host <host>', 'Host to listen on', '0.0.0.0')
+  .addOption(
+    new Option('--oauth-refresh-interval <seconds>', 'How often to check OAuth credential expiry')
+      .argParser((value) => parseRefreshSeconds(value, '--oauth-refresh-interval', false))
+      .default(DEFAULT_OAUTH_REFRESH_INTERVAL_MS, String(DEFAULT_OAUTH_REFRESH_INTERVAL_MS / 1000)),
+  )
+  .addOption(
+    new Option(
+      '--oauth-refresh-before-expiry <seconds>',
+      'Refresh OAuth credentials this long before expiry (0 means expired only)',
+    )
+      .argParser((value) => parseRefreshSeconds(value, '--oauth-refresh-before-expiry', true))
+      .default(
+        DEFAULT_OAUTH_REFRESH_BEFORE_EXPIRY_MS,
+        String(DEFAULT_OAUTH_REFRESH_BEFORE_EXPIRY_MS / 1000),
+      ),
+  )
+  .option('--no-oauth-auto-refresh', 'Disable automatic OAuth credential refresh')
   .action(async (options) => {
     const apiKey = process.env.LLM_OAUTH_API_KEY;
     if (!apiKey) {
@@ -34,6 +56,9 @@ program
       apiKey,
       port: Number(options.port),
       host: options.host,
+      oauthAutoRefresh: options.oauthAutoRefresh,
+      oauthRefreshIntervalMs: options.oauthRefreshInterval,
+      oauthRefreshBeforeExpiryMs: options.oauthRefreshBeforeExpiry,
     });
   });
 

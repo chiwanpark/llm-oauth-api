@@ -33,6 +33,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 - streaming SSE responses
 - image input
 - tool calls
+- automatic OAuth credential refresh
 - shared API key protection via `LLM_OAUTH_API_KEY`
 
 ## Install
@@ -84,6 +85,22 @@ pnpm loa serve \
   --auth-file ./auth.json \
   --providers anthropic,github-copilot,google,nvidia,openai-codex
 ```
+
+While the server is running, it checks stored OAuth credentials for enabled providers every 60
+seconds and refreshes credentials that expire within 300 seconds. Refreshed credentials are written
+back to the auth file. Change the timing with seconds-based options:
+
+```bash
+pnpm loa serve \
+  --auth-file ./auth.json \
+  --oauth-refresh-interval 30 \
+  --oauth-refresh-before-expiry 120
+```
+
+Set `--oauth-refresh-before-expiry 0` to refresh only credentials that are already expired. Use
+`--no-oauth-auto-refresh` to disable the background scheduler. API-key credentials are never
+refreshed. A failed provider refresh is logged without token values and retried on a later check;
+request-time refresh remains available as a fallback.
 
 Open `http://localhost:3000/` to use the browser-based API playground. Enter the shared API
 key, load a configured model, and test either `/chat/completions` or `/responses`. The key is

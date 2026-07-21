@@ -21,6 +21,11 @@ import Fastify, {
 
 import { JsonCredentialStore } from './credential-store.js';
 import {
+  DEFAULT_OAUTH_REFRESH_BEFORE_EXPIRY_MS,
+  DEFAULT_OAUTH_REFRESH_INTERVAL_MS,
+  startOAuthRefreshScheduler,
+} from './oauth-refresh.js';
+import {
   assistantUsage,
   buildChatContext,
   buildChatPiOptions,
@@ -44,14 +49,37 @@ export type ServerOptions = {
   apiKey: string;
   port: number;
   host: string;
+  oauthAutoRefresh?: boolean;
+  oauthRefreshIntervalMs?: number;
+  oauthRefreshBeforeExpiryMs?: number;
 };
 
 export async function startServer(options: ServerOptions): Promise<void> {
   const app = Fastify({ logger: true });
-  const models = createModels({ credentials: new JsonCredentialStore(options.authFile) });
-  for (const provider of createSupportedProviders(options.providerIds)) {
-    models.setProvider(withTokenRefreshLogging(provider, app.log));
+  const credentials = new JsonCredentialStore(options.authFile);
+  const providers = createSupportedProviders(options.providerIds).map((provider) =>
+    withTokenRefreshLogging(provider, app.log),
+  );
+  const models = createModels({ credentials });
+  for (const provider of providers) {
+    models.setProvider(provider);
   }
+
+  const oauthRefreshScheduler =
+    options.oauthAutoRefresh === false
+      ? undefined
+      : startOAuthRefreshScheduler({
+          credentials,
+          providers,
+          logger: app.log,
+          intervalMs: options.oauthRefreshIntervalMs ?? DEFAULT_OAUTH_REFRESH_INTERVAL_MS,
+          refreshBeforeExpiryMs:
+            options.oauthRefreshBeforeExpiryMs ?? DEFAULT_OAUTH_REFRESH_BEFORE_EXPIRY_MS,
+        });
+
+  app.addHook('onClose', async () => {
+    await oauthRefreshScheduler?.stop();
+  });
 
   app.addHook('onRequest', async (request, reply) => {
     if (
@@ -78,7 +106,12 @@ export async function startServer(options: ServerOptions): Promise<void> {
   });
 
   await registerClient(app);
-  await app.listen({ host: options.host, port: options.port });
+  try {
+    await app.listen({ host: options.host, port: options.port });
+  } catch (error) {
+    await oauthRefreshScheduler?.stop();
+    throw error;
+  }
 }
 
 async function registerClient(app: FastifyInstance): Promise<void> {
@@ -119,13 +152,14 @@ function withTokenRefreshLogging(provider: Provider, logger: FastifyBaseLogger):
 
   const refresh = oauth.refresh.bind(oauth);
   oauth.refresh = async (credential: OAuthCredential) => {
+    const now = Date.now();
     logger.warn(
       {
         providerId: provider.id,
-        expiredAt: formatTimestamp(credential.expires),
-        expiredByMs: Math.max(0, Date.now() - credential.expires),
+        expiresAt: formatTimestamp(credential.expires),
+        expiresInMs: credential.expires - now,
       },
-      'OAuth access token expired; refreshing',
+      'OAuth access token refresh started',
     );
 
     try {

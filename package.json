@@ -13,6 +13,7 @@
     "dev:client": "vite",
     "loa": "tsx src/cli.ts",
     "start": "node dist/cli.js",
+    "test": "tsx --test test/*.test.ts",
     "check": "tsc -p tsconfig.json --noEmit && svelte-check --tsconfig ./tsconfig.client.json",
     "lint": "eslint .",
     "format": "prettier --write ."
