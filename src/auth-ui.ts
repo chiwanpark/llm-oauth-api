@@ -1,6 +1,6 @@
 import { confirm, input, password, select } from '@inquirer/prompts';
 
-import type { AuthEvent, AuthLoginCallbacks, AuthPrompt } from '@earendil-works/pi-ai';
+import type { AuthEvent, AuthInteraction, AuthPrompt } from '@earendil-works/pi-ai';
 
 async function promptValue(prompt: AuthPrompt): Promise<string> {
   switch (prompt.type) {
@@ -25,7 +25,7 @@ async function promptValue(prompt: AuthPrompt): Promise<string> {
   }
 }
 
-export function createCliAuthCallbacks(): AuthLoginCallbacks {
+export function createCliAuthCallbacks(): AuthInteraction {
   return {
     async prompt(prompt) {
       return promptValue(prompt);
@@ -38,6 +38,12 @@ export function createCliAuthCallbacks(): AuthLoginCallbacks {
 
 function printAuthEvent(event: AuthEvent): void {
   switch (event.type) {
+    case 'info':
+      console.log(event.message);
+      for (const link of event.links ?? []) {
+        console.log(link.label ? `${link.label}: ${link.url}` : link.url);
+      }
+      break;
     case 'auth_url':
       console.log(`\nOpen this URL in your browser:\n${event.url}`);
       if (event.instructions) console.log(`\n${event.instructions}`);

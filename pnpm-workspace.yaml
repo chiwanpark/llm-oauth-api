@@ -4,5 +4,5 @@ allowBuilds:
   esbuild: true
   protobufjs: true
 minimumReleaseAgeExclude:
-  - '@earendil-works/pi-ai@0.80.2'
+  - '@earendil-works/pi-ai@0.81.1'
   - fastify@5.10.0

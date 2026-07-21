@@ -4,7 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import type { Credential, CredentialStore, OAuthCredential, Provider } from '@earendil-works/pi-ai';
+import type {
+  Credential,
+  CredentialInfo,
+  CredentialStore,
+  OAuthCredential,
+  Provider,
+} from '@earendil-works/pi-ai';
 
 import { JsonCredentialStore } from '../src/credential-store.js';
 import {
@@ -32,6 +38,13 @@ class MemoryCredentialStore implements CredentialStore {
   async read(providerId: string): Promise<Credential | undefined> {
     this.readCalls += 1;
     return this.values.get(providerId);
+  }
+
+  async list(): Promise<readonly CredentialInfo[]> {
+    return [...this.values].map(([providerId, credential]) => ({
+      providerId,
+      type: credential.type,
+    }));
   }
 
   async modify(

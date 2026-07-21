@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { CredentialStore, Credential } from '@earendil-works/pi-ai';
+import type { CredentialStore, Credential, CredentialInfo } from '@earendil-works/pi-ai';
 
 async function readJsonFile(filePath: string): Promise<Record<string, Credential>> {
   try {
@@ -38,6 +38,14 @@ export class JsonCredentialStore implements CredentialStore {
   async read(providerId: string): Promise<Credential | undefined> {
     const data = await readJsonFile(this.filePath);
     return data[providerId];
+  }
+
+  async list(): Promise<readonly CredentialInfo[]> {
+    const data = await readJsonFile(this.filePath);
+    return Object.entries(data).map(([providerId, credential]) => ({
+      providerId,
+      type: credential.type,
+    }));
   }
 
   async modify(
