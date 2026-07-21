@@ -26,6 +26,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 
 ## Features
 
+- Svelte API playground at `GET /`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
@@ -83,6 +84,13 @@ pnpm loa serve \
   --auth-file ./auth.json \
   --providers anthropic,github-copilot,google,nvidia,openai-codex
 ```
+
+Open `http://localhost:3000/` to use the browser-based API playground. Enter the shared API
+key, load a configured model, and test either `/chat/completions` or `/responses`. The key is
+kept in the current browser tab and is not persisted.
+
+For frontend development, run `pnpm dev:client` after starting the API server. Vite serves the
+client on port 5173 and proxies `/v1` requests to port 3000.
 
 ## Calling the API
 

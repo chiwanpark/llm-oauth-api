@@ -1,5 +1,6 @@
 allowBuilds:
   '@google/genai': true
+  carbon-components-svelte: false
   esbuild: true
   protobufjs: true
 minimumReleaseAgeExclude:

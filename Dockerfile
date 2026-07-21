@@ -9,7 +9,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS build
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.client.json vite.config.ts svelte.config.js ./
+COPY index.html ./
 COPY src ./src
 RUN pnpm build
 

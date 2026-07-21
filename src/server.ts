@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
+import fastifyStatic from '@fastify/static';
 import {
   createModels,
   type AssistantMessage,
@@ -8,7 +12,12 @@ import {
   type OAuthCredential,
   type Provider,
 } from '@earendil-works/pi-ai';
-import Fastify, { type FastifyBaseLogger, type FastifyReply, type FastifyRequest } from 'fastify';
+import Fastify, {
+  type FastifyBaseLogger,
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from 'fastify';
 
 import { JsonCredentialStore } from './credential-store.js';
 import {
@@ -45,7 +54,10 @@ export async function startServer(options: ServerOptions): Promise<void> {
   }
 
   app.addHook('onRequest', async (request, reply) => {
-    if (!isAuthorized(request, options.apiKey)) {
+    if (
+      (request.url === '/v1' || request.url.startsWith('/v1/')) &&
+      !isAuthorized(request, options.apiKey)
+    ) {
       reply
         .code(401)
         .send(createOpenAIError('Invalid API key', 'authentication_error', 'invalid_api_key'));
@@ -65,7 +77,40 @@ export async function startServer(options: ServerOptions): Promise<void> {
     await handleResponses(models, request, reply);
   });
 
+  await registerClient(app);
   await app.listen({ host: options.host, port: options.port });
+}
+
+async function registerClient(app: FastifyInstance): Promise<void> {
+  const clientRoot = findClientRoot();
+  if (!clientRoot) {
+    app.get('/', async (_request, reply) => {
+      reply
+        .code(503)
+        .type('text/plain')
+        .send('API playground assets are missing. Run `pnpm build` before starting the server.');
+    });
+    return;
+  }
+
+  await app.register(fastifyStatic, {
+    root: clientRoot,
+    maxAge: '30d',
+    immutable: true,
+  });
+
+  app.get('/', async (_request, reply) => {
+    return reply.sendFile('index.html', { maxAge: 0, immutable: false });
+  });
+}
+
+function findClientRoot(): string | undefined {
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    resolve(moduleDirectory, 'client'),
+    resolve(moduleDirectory, '../dist/client'),
+  ];
+  return candidates.find((candidate) => existsSync(resolve(candidate, 'index.html')));
 }
 
 function withTokenRefreshLogging(provider: Provider, logger: FastifyBaseLogger): Provider {

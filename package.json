@@ -9,10 +9,11 @@
     "llm-oauth-api": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && vite build",
+    "dev:client": "vite",
     "loa": "tsx src/cli.ts",
     "start": "node dist/cli.js",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && svelte-check --tsconfig ./tsconfig.client.json",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
@@ -22,19 +23,27 @@
   "packageManager": "pnpm@11.5.2",
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.6",
+    "@fastify/static": "^10.1.0",
     "@inquirer/prompts": "^8.5.2",
     "commander": "^15.0.0",
     "fastify": "^5.10.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@types/node": "^24.13.2",
+    "carbon-components-svelte": "^0.110.1",
+    "carbon-icons-svelte": "^13.13.0",
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.7.0",
     "prettier": "^3.9.4",
+    "prettier-plugin-svelte": "^4.1.1",
+    "svelte": "^5.56.6",
+    "svelte-check": "^4.7.3",
     "tsx": "^4.23.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.62.1"
+    "typescript-eslint": "^8.62.1",
+    "vite": "^8.1.5"
   }
 }
