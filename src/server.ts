@@ -383,7 +383,7 @@ function createRequestSignal(request: FastifyRequest, reply: FastifyReply): Abor
   return controller.signal;
 }
 
-async function streamChatCompletions(
+export async function streamChatCompletions(
   models: MutableModels,
   model: any,
   context: any,
@@ -410,6 +410,17 @@ async function streamChatCompletions(
   });
 
   for await (const event of stream) {
+    if (event.type === 'thinking_delta') {
+      writeSseData(reply, {
+        id,
+        object: 'chat.completion.chunk',
+        created,
+        model: modelId,
+        choices: [{ index: 0, delta: { reasoning_content: event.delta }, finish_reason: null }],
+      });
+      continue;
+    }
+
     if (event.type === 'text_delta') {
       writeSseData(reply, {
         id,
@@ -502,7 +513,7 @@ async function streamChatCompletions(
   writeSseDone(reply);
 }
 
-async function streamResponses(
+export async function streamResponses(
   models: MutableModels,
   model: any,
   context: any,
@@ -517,6 +528,7 @@ async function streamResponses(
   const createdAt = Math.floor(Date.now() / 1000);
   const stream = models.stream(model, context, options);
 
+  const reasoningItems = new Map<number, { outputIndex: number; itemId: string }>();
   let assistantOutputIndex: number | undefined;
   let assistantItemId: string | undefined;
   let assistantText = '';
@@ -547,6 +559,82 @@ async function streamResponses(
   });
 
   for await (const event of stream) {
+    if (event.type === 'thinking_start') {
+      const item = {
+        itemId: `rs_${randomUUID()}`,
+        outputIndex: nextOutputIndex++,
+      };
+      reasoningItems.set(event.contentIndex, item);
+      writeSseEvent(reply, 'response.output_item.added', {
+        type: 'response.output_item.added',
+        response_id: responseId,
+        output_index: item.outputIndex,
+        item: {
+          id: item.itemId,
+          type: 'reasoning',
+          status: 'in_progress',
+          summary: [],
+        },
+      });
+      writeSseEvent(reply, 'response.reasoning_summary_part.added', {
+        type: 'response.reasoning_summary_part.added',
+        response_id: responseId,
+        output_index: item.outputIndex,
+        item_id: item.itemId,
+        summary_index: 0,
+        part: { type: 'summary_text', text: '' },
+      });
+      continue;
+    }
+
+    if (event.type === 'thinking_delta') {
+      const item = reasoningItems.get(event.contentIndex);
+      if (!item) continue;
+      writeSseEvent(reply, 'response.reasoning_summary_text.delta', {
+        type: 'response.reasoning_summary_text.delta',
+        response_id: responseId,
+        output_index: item.outputIndex,
+        item_id: item.itemId,
+        summary_index: 0,
+        delta: event.delta,
+      });
+      continue;
+    }
+
+    if (event.type === 'thinking_end') {
+      const item = reasoningItems.get(event.contentIndex);
+      if (!item) continue;
+      writeSseEvent(reply, 'response.reasoning_summary_text.done', {
+        type: 'response.reasoning_summary_text.done',
+        response_id: responseId,
+        output_index: item.outputIndex,
+        item_id: item.itemId,
+        summary_index: 0,
+        text: event.content,
+      });
+      writeSseEvent(reply, 'response.reasoning_summary_part.done', {
+        type: 'response.reasoning_summary_part.done',
+        response_id: responseId,
+        output_index: item.outputIndex,
+        item_id: item.itemId,
+        summary_index: 0,
+        part: { type: 'summary_text', text: event.content },
+      });
+      writeSseEvent(reply, 'response.output_item.done', {
+        type: 'response.output_item.done',
+        response_id: responseId,
+        output_index: item.outputIndex,
+        item: {
+          id: item.itemId,
+          type: 'reasoning',
+          status: 'completed',
+          summary: [{ type: 'summary_text', text: event.content }],
+        },
+      });
+      reasoningItems.delete(event.contentIndex);
+      continue;
+    }
+
     if (event.type === 'text_start') {
       assistantItemId ??= `msg_${randomUUID()}`;
       assistantOutputIndex ??= nextOutputIndex++;

@@ -7,6 +7,7 @@ import type {
   Model,
   MutableModels,
   TextContent,
+  ThinkingContent,
   Tool,
   ToolCall,
   ToolResultMessage,
@@ -79,6 +80,16 @@ export function assistantText(message: AssistantMessage): string {
   return message.content
     .filter((block): block is TextContent => block.type === 'text')
     .map((block) => block.text)
+    .join('');
+}
+
+function assistantThinking(message: AssistantMessage): ThinkingContent[] {
+  return message.content.filter((block): block is ThinkingContent => block.type === 'thinking');
+}
+
+export function assistantReasoning(message: AssistantMessage): string {
+  return assistantThinking(message)
+    .map((block) => block.thinking)
     .join('');
 }
 
@@ -490,6 +501,8 @@ async function imageFromUrl(
 }
 
 export function createChatCompletionResponse(model: Model<any>, message: AssistantMessage) {
+  const reasoning = assistantReasoning(message);
+
   return {
     id: message.responseId ?? `chatcmpl_${randomUUID()}`,
     object: 'chat.completion',
@@ -501,6 +514,7 @@ export function createChatCompletionResponse(model: Model<any>, message: Assista
         message: {
           role: 'assistant',
           content: assistantText(message) || null,
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
           tool_calls: assistantToolCalls(message).map((toolCall) => ({
             id: toolCall.id,
             type: 'function',
@@ -521,6 +535,16 @@ export function createResponsesResponse(model: Model<any>, message: AssistantMes
   const text = assistantText(message);
   const toolCalls = assistantToolCalls(message);
   const output: any[] = [];
+
+  for (const block of assistantThinking(message)) {
+    if (!block.thinking) continue;
+    output.push({
+      id: `rs_${randomUUID()}`,
+      type: 'reasoning',
+      status: 'completed',
+      summary: [{ type: 'summary_text', text: block.thinking }],
+    });
+  }
 
   if (text) {
     output.push({
