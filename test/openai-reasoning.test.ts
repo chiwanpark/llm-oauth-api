@@ -39,12 +39,13 @@ function assistantMessage(content: AssistantMessage['content']): AssistantMessag
 }
 
 function streamingModels(events: any[]): MutableModels {
+  const stream = () =>
+    (async function* () {
+      for (const event of events) yield event;
+    })();
   return {
-    stream() {
-      return (async function* () {
-        for (const event of events) yield event;
-      })();
-    },
+    stream,
+    streamSimple: stream,
   } as unknown as MutableModels;
 }
 

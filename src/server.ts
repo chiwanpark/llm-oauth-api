@@ -279,7 +279,7 @@ async function handleChatCompletions(
       return;
     }
 
-    const message = await models.complete(model, context, options);
+    const message = await models.completeSimple(model, context, options);
     logModelResponse(request.log, model, message);
     if (message.stopReason === 'error' || message.stopReason === 'aborted') {
       reply
@@ -358,7 +358,7 @@ async function handleResponses(
       return;
     }
 
-    const message = await models.complete(model, context, options);
+    const message = await models.completeSimple(model, context, options);
     logModelResponse(request.log, model, message);
     if (message.stopReason === 'error' || message.stopReason === 'aborted') {
       reply
@@ -399,7 +399,7 @@ export async function streamChatCompletions(
   const toolCallIndexes = new Map<number, number>();
   let nextToolCallIndex = 0;
 
-  const stream = models.stream(model, context, options);
+  const stream = models.streamSimple(model, context, options);
 
   writeSseData(reply, {
     id,
@@ -526,7 +526,7 @@ export async function streamResponses(
   const responseId = `resp_${randomUUID()}`;
   const modelId = exposedModelId(model);
   const createdAt = Math.floor(Date.now() / 1000);
-  const stream = models.stream(model, context, options);
+  const stream = models.streamSimple(model, context, options);
 
   const reasoningItems = new Map<number, { outputIndex: number; itemId: string }>();
   let assistantOutputIndex: number | undefined;

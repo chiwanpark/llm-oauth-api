@@ -241,34 +241,56 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
   return REASONING_EFFORTS.some((effort) => effort === value);
 }
 
+/**
+ * pi-ai's OpenAI-compatible APIs (chat completions, responses) read the
+ * `reasoningEffort` option, while its Anthropic Messages API reads a
+ * separate `reasoning` (ThinkingLevel) option instead. Both fields must be
+ * set so reasoning/thinking is enabled regardless of which provider ends up
+ * handling the request. `"none"` has no ThinkingLevel equivalent, so it maps
+ * to `undefined` (thinking disabled).
+ */
+function thinkingLevelFor(effort: ReasoningEffort): Exclude<ReasoningEffort, 'none'> | undefined {
+  return effort === 'none' ? undefined : effort;
+}
+
 export function buildPiOptions(body: any, signal?: AbortSignal) {
+  const maxTokens =
+    typeof body.max_output_tokens === 'number'
+      ? body.max_output_tokens
+      : typeof body.max_completion_tokens === 'number'
+        ? body.max_completion_tokens
+        : typeof body.max_tokens === 'number'
+          ? body.max_tokens
+          : undefined;
+
   return {
-    temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
-    maxTokens:
-      typeof body.max_output_tokens === 'number'
-        ? body.max_output_tokens
-        : typeof body.max_completion_tokens === 'number'
-          ? body.max_completion_tokens
-          : typeof body.max_tokens === 'number'
-            ? body.max_tokens
-            : undefined,
-    signal,
-    metadata: typeof body.user === 'string' ? { user_id: body.user } : undefined,
+    ...(typeof body.temperature === 'number' ? { temperature: body.temperature } : {}),
+    ...(maxTokens !== undefined ? { maxTokens } : {}),
+    ...(signal !== undefined ? { signal } : {}),
+    ...(typeof body.user === 'string' ? { metadata: { user_id: body.user } } : {}),
   };
 }
 
 export function buildChatPiOptions(body: any, signal?: AbortSignal) {
   const options = buildPiOptions(body, signal);
-  return isReasoningEffort(body.reasoning_effort)
-    ? { ...options, reasoningEffort: body.reasoning_effort }
-    : options;
+  if (!isReasoningEffort(body.reasoning_effort)) return options;
+  const reasoning = thinkingLevelFor(body.reasoning_effort);
+  return {
+    ...options,
+    reasoningEffort: body.reasoning_effort,
+    ...(reasoning !== undefined ? { reasoning } : {}),
+  };
 }
 
 export function buildResponsesPiOptions(body: any, signal?: AbortSignal) {
   const options = buildPiOptions(body, signal);
-  return isReasoningEffort(body.reasoning?.effort)
-    ? { ...options, reasoningEffort: body.reasoning.effort }
-    : options;
+  if (!isReasoningEffort(body.reasoning?.effort)) return options;
+  const reasoning = thinkingLevelFor(body.reasoning.effort);
+  return {
+    ...options,
+    reasoningEffort: body.reasoning.effort,
+    ...(reasoning !== undefined ? { reasoning } : {}),
+  };
 }
 
 function buildTools(rawTools: any, toolChoice: any): Tool[] | undefined {
