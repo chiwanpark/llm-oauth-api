@@ -23,7 +23,7 @@
   },
   "packageManager": "pnpm@11.5.2",
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.81.1",
+    "@earendil-works/pi-ai": "^0.83.0",
     "@fastify/static": "^10.1.0",
     "@inquirer/prompts": "^8.5.2",
     "commander": "^15.0.0",
