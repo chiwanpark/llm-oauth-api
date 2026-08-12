@@ -506,6 +506,40 @@ legend {
   line-height: 1.5;
 }
 
+.reasoning {
+  margin: 0 0 20px;
+  color: #525252;
+  background: #f4f4f4;
+  border-left: 3px solid #8a3ffc;
+}
+
+.reasoning summary {
+  padding: 10px 16px;
+  color: #6929c4;
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  list-style: none;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.reasoning summary::-webkit-details-marker {
+  display: none;
+}
+
+.reasoning-text {
+  padding: 0 16px 14px;
+  color: #525252;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(5, minmax(72px, 1fr));

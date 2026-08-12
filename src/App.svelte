@@ -66,6 +66,7 @@
   let requestState: RequestState = 'idle';
   let requestError = '';
   let displayText = '';
+  let reasoningText = '';
   let rawResponse = '';
   let responseData: unknown = null;
   let responseStatus: number | null = null;
@@ -174,6 +175,7 @@
     requestState = 'running';
     requestError = '';
     displayText = '';
+    reasoningText = '';
     rawResponse = '';
     responseData = null;
     responseStatus = null;
@@ -207,6 +209,7 @@
         responseData = data;
         rawResponse = formatValue(data);
         displayText = assistantText(data);
+        reasoningText = assistantReasoning(data);
       }
 
       requestState = 'complete';
@@ -254,6 +257,12 @@
       const delta = endpoint === '/chat/completions' ? chatDelta(payload) : responsesDelta(payload);
       if (delta) displayText += delta;
 
+      const reasoningDelta =
+        endpoint === '/chat/completions'
+          ? chatReasoningDelta(payload)
+          : responsesReasoningDelta(payload);
+      if (reasoningDelta) reasoningText += reasoningDelta;
+
       if (isRecord(payload) && payload.type === 'response.completed') {
         completedResponse = payload.response;
       }
@@ -271,6 +280,7 @@
     if (buffer.trim()) processFrame(buffer);
     responseData = completedResponse ?? [...events].reverse().find(hasUsage) ?? events;
     if (!displayText) displayText = assistantText(responseData);
+    if (!reasoningText) reasoningText = assistantReasoning(responseData);
   }
 
   function abortRequest(): void {
@@ -347,6 +357,50 @@
   function responsesDelta(value: unknown): string {
     return isRecord(value) &&
       value.type === 'response.output_text.delta' &&
+      typeof value.delta === 'string'
+      ? value.delta
+      : '';
+  }
+
+  function assistantReasoning(value: unknown): string {
+    if (!isRecord(value)) return '';
+
+    if (Array.isArray(value.choices)) {
+      const first = value.choices[0];
+      if (
+        isRecord(first) &&
+        isRecord(first.message) &&
+        typeof first.message.reasoning_content === 'string'
+      ) {
+        return first.message.reasoning_content;
+      }
+      return '';
+    }
+
+    if (Array.isArray(value.output)) {
+      return value.output
+        .filter((item): item is Record<string, unknown> => isRecord(item) && item.type === 'reasoning')
+        .flatMap((item) => (Array.isArray(item.summary) ? item.summary : []))
+        .map((part) => (isRecord(part) && typeof part.text === 'string' ? part.text : ''))
+        .join('');
+    }
+
+    return '';
+  }
+
+  function chatReasoningDelta(value: unknown): string {
+    if (!isRecord(value) || !Array.isArray(value.choices)) return '';
+    const first = value.choices[0];
+    return isRecord(first) &&
+      isRecord(first.delta) &&
+      typeof first.delta.reasoning_content === 'string'
+      ? first.delta.reasoning_content
+      : '';
+  }
+
+  function responsesReasoningDelta(value: unknown): string {
+    return isRecord(value) &&
+      value.type === 'response.reasoning_summary_text.delta' &&
       typeof value.delta === 'string'
       ? value.delta
       : '';
@@ -641,6 +695,18 @@
                 description={stream ? 'Waiting for the first token…' : 'Generating response…'}
               />
             </div>
+          {/if}
+
+          {#if reasoningText}
+            <details class="reasoning" open>
+              <summary>Reasoning</summary>
+              <div class="reasoning-text">
+                {reasoningText}{#if requestState === 'running' && !displayText}<span
+                    class="cursor"
+                    aria-hidden="true"
+                  ></span>{/if}
+              </div>
+            </details>
           {/if}
 
           {#if displayText}
