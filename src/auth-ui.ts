@@ -1,6 +1,6 @@
 import { confirm, input, password, select } from '@inquirer/prompts';
 
-import type { AuthEvent, AuthInteraction, AuthPrompt } from '@earendil-works/pi-ai';
+import type { AuthEvent, AuthPrompt, ProviderAuthInteraction } from '@earendil-works/pi-ai';
 
 async function promptValue(prompt: AuthPrompt): Promise<string> {
   switch (prompt.type) {
@@ -25,8 +25,19 @@ async function promptValue(prompt: AuthPrompt): Promise<string> {
   }
 }
 
-export function createCliAuthCallbacks(): AuthInteraction {
+/**
+ * Provider `login()` implementations require a concrete abort signal (pi-ai
+ * >=0.84). Interactive CLI logins have no in-process cancellation source --
+ * the user cancels with Ctrl+C, which tears down the whole process -- so this
+ * signal is intentionally never aborted.
+ */
+function neverAbortedSignal(): AbortSignal {
+  return new AbortController().signal;
+}
+
+export function createCliAuthCallbacks(): ProviderAuthInteraction {
   return {
+    signal: neverAbortedSignal(),
     async prompt(prompt) {
       return promptValue(prompt);
     },

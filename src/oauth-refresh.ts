@@ -2,6 +2,12 @@ import type { CredentialStore, Provider } from '@earendil-works/pi-ai';
 
 export const DEFAULT_OAUTH_REFRESH_INTERVAL_MS = 60_000;
 export const DEFAULT_OAUTH_REFRESH_BEFORE_EXPIRY_MS = 300_000;
+/**
+ * Upper bound for a single background token exchange. The refresh runs while
+ * the credential-store lock is held, so an unbounded request would block every
+ * other reader/writer of that provider's credential indefinitely.
+ */
+export const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 30_000;
 
 export type OAuthRefreshLogger = {
   error(bindings: Record<string, unknown>, message: string): void;
@@ -12,6 +18,8 @@ export type OAuthRefreshSweepOptions = {
   providers: readonly Provider[];
   logger: OAuthRefreshLogger;
   refreshBeforeExpiryMs: number;
+  /** Abort a single token exchange after this long. Defaults to 30s. */
+  refreshTimeoutMs?: number;
   now?: () => number;
 };
 
@@ -129,7 +137,10 @@ async function refreshProvider(
       ) {
         return undefined;
       }
-      return oauth.refresh(current);
+      return oauth.refresh(
+        current,
+        AbortSignal.timeout(options.refreshTimeoutMs ?? DEFAULT_OAUTH_REFRESH_TIMEOUT_MS),
+      );
     });
   } catch (error) {
     options.logger.error(

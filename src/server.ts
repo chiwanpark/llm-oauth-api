@@ -151,7 +151,7 @@ function withTokenRefreshLogging(provider: Provider, logger: FastifyBaseLogger):
   if (!oauth) return provider;
 
   const refresh = oauth.refresh.bind(oauth);
-  oauth.refresh = async (credential: OAuthCredential) => {
+  oauth.refresh = async (credential: OAuthCredential, signal: AbortSignal) => {
     const now = Date.now();
     logger.warn(
       {
@@ -163,7 +163,7 @@ function withTokenRefreshLogging(provider: Provider, logger: FastifyBaseLogger):
     );
 
     try {
-      const refreshed = await refresh(credential);
+      const refreshed = await refresh(credential, signal);
       logger.info(
         {
           providerId: provider.id,

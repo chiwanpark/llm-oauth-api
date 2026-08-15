@@ -270,3 +270,63 @@ test('scheduler shares an in-flight run and stops without scheduling more work',
   assert.equal(refreshCalls, 1);
   assert.equal(credentials.readCalls, readsAfterStop);
 });
+
+test('bounds a stalled refresh so the credential-store lock is released', async () => {
+  const credentials = new MemoryCredentialStore({ 'oauth-test': oauthCredential(1_100) });
+  const errors: string[] = [];
+  let observed: AbortSignal | undefined;
+
+  const stalled: Provider = {
+    id: 'oauth-test',
+    name: 'oauth-test',
+    auth: {
+      oauth: {
+        name: 'oauth-test',
+        async login() {
+          throw new Error('not implemented in test');
+        },
+        // Never settles on its own; only the abort signal can end it.
+        refresh(_credential: OAuthCredential, signal: AbortSignal) {
+          observed = signal;
+          return new Promise<OAuthCredential>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        },
+        async toAuth(credential: OAuthCredential) {
+          return { apiKey: credential.access };
+        },
+      },
+    },
+  } as unknown as Provider;
+
+  const sweep = refreshExpiringOAuthCredentials({
+    credentials,
+    providers: [stalled],
+    logger: {
+      error(_bindings, message) {
+        errors.push(message);
+      },
+    },
+    refreshBeforeExpiryMs: 200,
+    refreshTimeoutMs: 20,
+    now: () => 1_000,
+  });
+
+  // Fail fast instead of hanging CI if the refresh ever becomes unbounded again.
+  let guard: NodeJS.Timeout;
+  await Promise.race([
+    sweep,
+    new Promise((_resolve, reject) => {
+      guard = setTimeout(() => reject(new Error('sweep did not bound the stalled refresh')), 2_000);
+    }),
+  ]).finally(() => clearTimeout(guard!));
+
+  assert.ok(observed instanceof AbortSignal);
+  assert.equal(observed?.aborted, true);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0]!, /refresh failed/);
+
+  // The lock must be free afterwards, and the old credential preserved.
+  const after = await credentials.modify('oauth-test', async (current) => current);
+  assert.deepEqual(after, oauthCredential(1_100));
+});
