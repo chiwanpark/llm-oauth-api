@@ -8,7 +8,12 @@ import {
   DEFAULT_OAUTH_REFRESH_INTERVAL_MS,
   parseRefreshSeconds,
 } from './oauth-refresh.js';
-import { createSupportedProvider, getSupportedProviderIds } from './providers.js';
+import { GROUP_ENV_PREFIX, parseModelGroups } from './groups.js';
+import {
+  createSupportedProvider,
+  getSupportedProviderIds,
+  resolveSupportedProviderIds,
+} from './providers.js';
 import { startServer } from './server.js';
 
 const program = new Command();
@@ -44,15 +49,27 @@ program
       ),
   )
   .option('--no-oauth-auto-refresh', 'Disable automatic OAuth credential refresh')
+  .addHelpText(
+    'after',
+    '\nModel groups:\n' +
+      `  Set ${GROUP_ENV_PREFIX}<NAME>=<provider>:<model>,... to expose a fallback model.\n` +
+      `  e.g. ${GROUP_ENV_PREFIX}FREE=github-copilot:gpt-5.4-mini,openai-codex:gpt-5-mini\n` +
+      '  makes the model "free" try github-copilot first and fall back to openai-codex.\n' +
+      '  An entry without a ":" names another group and is flattened into its parent.',
+  )
   .action(async (options) => {
     const apiKey = process.env.LLM_OAUTH_API_KEY;
     if (!apiKey) {
       throw new Error('LLM_OAUTH_API_KEY environment variable is required');
     }
 
+    const providerIds = splitCsv(options.providers);
+    const groups = parseModelGroups(process.env, resolveSupportedProviderIds(providerIds));
+
     await startServer({
       authFile: options.authFile,
-      providerIds: splitCsv(options.providers),
+      providerIds,
+      groups,
       apiKey,
       port: Number(options.port),
       host: options.host,

@@ -53,7 +53,8 @@ export function createSupportedProvider(input: string): Provider {
   return providerFactories[providerId]();
 }
 
-export function createSupportedProviders(providerIds?: string[]): Provider[] {
+/** Normalizes requested provider names into the deduped set the server exposes. */
+export function resolveSupportedProviderIds(providerIds?: string[]): SupportedProviderId[] {
   const ids = providerIds?.length
     ? providerIds.map((id) => {
         const resolved = resolveProviderId(id);
@@ -62,5 +63,9 @@ export function createSupportedProviders(providerIds?: string[]): Provider[] {
       })
     : getSupportedProviderIds();
 
-  return Array.from(new Set(ids)).map((id) => providerFactories[id]());
+  return Array.from(new Set(ids));
+}
+
+export function createSupportedProviders(providerIds?: string[]): Provider[] {
+  return resolveSupportedProviderIds(providerIds).map((id) => providerFactories[id]());
 }

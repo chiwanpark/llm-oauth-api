@@ -39,13 +39,20 @@ import {
   isReasoningEffort,
   mapFinishReason,
   REASONING_EFFORTS,
-  resolveModelByName,
 } from './openai-compat.js';
+import {
+  describeGroup,
+  findGroup,
+  groupModelEntries,
+  resolveModelCandidates,
+  type ModelGroup,
+} from './groups.js';
 import { createSupportedProviders } from './providers.js';
 
 export type ServerOptions = {
   authFile: string;
   providerIds?: string[];
+  groups?: ModelGroup[];
   apiKey: string;
   port: number;
   host: string;
@@ -92,17 +99,24 @@ export async function startServer(options: ServerOptions): Promise<void> {
     }
   });
 
+  const groups = options.groups ?? [];
+  for (const group of groups) {
+    app.log.info({ group: group.name, members: describeGroup(group) }, 'Model group registered');
+  }
+
   app.get('/v1/models', async (_request, reply) => {
     const available = await getAvailableModels(models);
-    reply.send(createOpenAIModelsResponse(available));
+    const response = createOpenAIModelsResponse(available);
+    response.data.push(...groupModelEntries(groups, available));
+    reply.send(response);
   });
 
   app.post('/v1/chat/completions', async (request, reply) => {
-    await handleChatCompletions(models, request, reply);
+    await handleChatCompletions(models, groups, request, reply);
   });
 
   app.post('/v1/responses', async (request, reply) => {
-    await handleResponses(models, request, reply);
+    await handleResponses(models, groups, request, reply);
   });
 
   await registerClient(app);
@@ -216,19 +230,68 @@ async function getAvailableModels(models: MutableModels) {
   return available;
 }
 
+/**
+ * Signals that an attempt failed before anything was written to the client, so
+ * the caller is still free to try the next provider in a group.
+ */
+class UpstreamAttemptError extends Error {
+  constructor(
+    message: string,
+    readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'UpstreamAttemptError';
+  }
+}
+
+type AttemptFailure = {
+  kind: 'unconfigured' | 'upstream' | 'exception';
+  model: Model<any>;
+  message: string;
+};
+
+/** Per-endpoint wiring; the fallback logic itself is shared. */
+type EndpointAdapter = {
+  label: string;
+  buildContext(model: Model<any>, body: any): Promise<any>;
+  buildOptions(body: any, signal: AbortSignal): any;
+  render(model: Model<any>, message: AssistantMessage): unknown;
+  stream(
+    models: MutableModels,
+    model: Model<any>,
+    context: any,
+    options: any,
+    reply: FastifyReply,
+    logger: FastifyBaseLogger,
+    allowFailover: boolean,
+  ): Promise<void>;
+};
+
+export const chatAdapter: EndpointAdapter = {
+  label: 'chat completions',
+  buildContext: buildChatContext,
+  buildOptions: buildChatPiOptions,
+  render: createChatCompletionResponse,
+  stream: streamChatCompletions,
+};
+
+export const responsesAdapter: EndpointAdapter = {
+  label: 'responses',
+  buildContext: buildResponsesContext,
+  buildOptions: buildResponsesPiOptions,
+  render: createResponsesResponse,
+  stream: streamResponses,
+};
+
 async function handleChatCompletions(
   models: MutableModels,
+  groups: readonly ModelGroup[],
   request: FastifyRequest,
   reply: FastifyReply,
 ) {
   const body = request.body as any;
-  const requestedModel = typeof body?.model === 'string' ? body.model : undefined;
-  if (!requestedModel) {
-    reply.code(400).send(createOpenAIError('`model` is required'));
-    return;
-  }
 
-  if (body.reasoning_effort !== undefined && !isReasoningEffort(body.reasoning_effort)) {
+  if (body?.reasoning_effort !== undefined && !isReasoningEffort(body.reasoning_effort)) {
     reply
       .code(400)
       .send(
@@ -241,73 +304,18 @@ async function handleChatCompletions(
     return;
   }
 
-  const model = resolveModelByName(models, requestedModel);
-  if (!model) {
-    reply
-      .code(404)
-      .send(
-        createOpenAIError(
-          `Unknown model: ${requestedModel}`,
-          'invalid_request_error',
-          'model_not_found',
-        ),
-      );
-    return;
-  }
-
-  try {
-    const auth = await models.getAuth(model);
-    if (!auth) {
-      reply
-        .code(400)
-        .send(
-          createOpenAIError(
-            `Model is not configured: ${requestedModel}`,
-            'invalid_request_error',
-            'model_not_configured',
-          ),
-        );
-      return;
-    }
-
-    const context = await buildChatContext(model, body);
-    const signal = createRequestSignal(request, reply);
-    const options = buildChatPiOptions(body, signal);
-
-    if (body.stream) {
-      await streamChatCompletions(models, model, context, options, reply, request.log);
-      return;
-    }
-
-    const message = await models.completeSimple(model, context, options);
-    logModelResponse(request.log, model, message);
-    if (message.stopReason === 'error' || message.stopReason === 'aborted') {
-      reply
-        .code(502)
-        .send(createOpenAIError(message.errorMessage ?? 'Upstream model error', 'api_error'));
-      return;
-    }
-
-    reply.send(createChatCompletionResponse(model, message));
-  } catch (error) {
-    request.log.error({ err: error }, 'chat completions failed');
-    reply.code(500).send(createOpenAIError(errorMessage(error), 'api_error'));
-  }
+  await runCompletion(models, groups, request, reply, chatAdapter);
 }
 
 async function handleResponses(
   models: MutableModels,
+  groups: readonly ModelGroup[],
   request: FastifyRequest,
   reply: FastifyReply,
 ) {
   const body = request.body as any;
-  const requestedModel = typeof body?.model === 'string' ? body.model : undefined;
-  if (!requestedModel) {
-    reply.code(400).send(createOpenAIError('`model` is required'));
-    return;
-  }
 
-  if (body.reasoning?.effort !== undefined && !isReasoningEffort(body.reasoning.effort)) {
+  if (body?.reasoning?.effort !== undefined && !isReasoningEffort(body.reasoning.effort)) {
     reply
       .code(400)
       .send(
@@ -320,23 +328,152 @@ async function handleResponses(
     return;
   }
 
-  const model = resolveModelByName(models, requestedModel);
-  if (!model) {
-    reply
-      .code(404)
-      .send(
-        createOpenAIError(
-          `Unknown model: ${requestedModel}`,
-          'invalid_request_error',
-          'model_not_found',
-        ),
-      );
+  await runCompletion(models, groups, request, reply, responsesAdapter);
+}
+
+/**
+ * Runs a request against its candidate models, falling back through a group
+ * until one succeeds.
+ *
+ * Fallback only happens while nothing has been sent to the client. Once a
+ * streaming response is committed to a provider the client already holds
+ * partial output, so a later failure is reported on that stream instead of
+ * being retried elsewhere.
+ */
+export async function runCompletion(
+  models: MutableModels,
+  groups: readonly ModelGroup[],
+  request: FastifyRequest,
+  reply: FastifyReply,
+  adapter: EndpointAdapter,
+): Promise<void> {
+  const body = request.body as any;
+  const requestedModel = typeof body?.model === 'string' ? body.model : undefined;
+  if (!requestedModel) {
+    reply.code(400).send(createOpenAIError('`model` is required'));
     return;
   }
 
-  try {
-    const auth = await models.getAuth(model);
-    if (!auth) {
+  const group = findGroup(groups, requestedModel);
+  const candidates = resolveModelCandidates(models, groups, requestedModel);
+  if (!candidates.length) {
+    // A group whose members are all missing from their catalogs is a different
+    // problem from a typo, so say which models were looked for.
+    const message = group
+      ? `No model in group "${group.name}" is available (${describeGroup(group)})`
+      : `Unknown model: ${requestedModel}`;
+    reply.code(404).send(createOpenAIError(message, 'invalid_request_error', 'model_not_found'));
+    return;
+  }
+
+  const allowFailover = candidates.length > 1;
+  const signal = createRequestSignal(request, reply);
+  const failures: AttemptFailure[] = [];
+
+  for (const [index, model] of candidates.entries()) {
+    if (signal.aborted) return;
+
+    const modelId = exposedModelId(model);
+    try {
+      const auth = await models.getAuth(model);
+      if (!auth) {
+        failures.push({ kind: 'unconfigured', model, message: 'not configured' });
+        logFallback(
+          request.log,
+          adapter,
+          requestedModel,
+          modelId,
+          candidates,
+          index,
+          'not configured',
+        );
+        continue;
+      }
+
+      const context = await adapter.buildContext(model, body);
+      const options = adapter.buildOptions(body, signal);
+
+      if (body.stream) {
+        await adapter.stream(models, model, context, options, reply, request.log, allowFailover);
+        return;
+      }
+
+      const message = await models.completeSimple(model, context, options);
+      logModelResponse(request.log, model, message);
+
+      // A client disconnect is not an upstream fault; another provider would
+      // fail the same way and nobody is listening for the result.
+      if (message.stopReason === 'aborted') {
+        reply
+          .code(502)
+          .send(createOpenAIError(message.errorMessage ?? 'Upstream model error', 'api_error'));
+        return;
+      }
+
+      if (message.stopReason === 'error') {
+        const detail = message.errorMessage ?? 'Upstream model error';
+        failures.push({ kind: 'upstream', model, message: detail });
+        logFallback(request.log, adapter, requestedModel, modelId, candidates, index, detail);
+        continue;
+      }
+
+      reply.send(adapter.render(model, message));
+      return;
+    } catch (error) {
+      if (reply.raw.headersSent) {
+        // The stream is already committed to this provider; failing over now
+        // would splice two providers' output into one response.
+        request.log.error(
+          { err: error, model: modelId },
+          `${adapter.label} failed after the response was committed`,
+        );
+        if (!reply.raw.writableEnded) reply.raw.end();
+        return;
+      }
+
+      const detail = error instanceof UpstreamAttemptError ? error.message : errorMessage(error);
+      failures.push({ kind: 'exception', model, message: detail });
+      request.log.error({ err: error, model: modelId }, `${adapter.label} failed`);
+      logFallback(request.log, adapter, requestedModel, modelId, candidates, index, detail);
+    }
+  }
+
+  sendExhausted(reply, requestedModel, group !== undefined, failures);
+}
+
+function logFallback(
+  logger: FastifyBaseLogger,
+  adapter: EndpointAdapter,
+  requestedModel: string,
+  modelId: string,
+  candidates: readonly Model<any>[],
+  index: number,
+  reason: string,
+): void {
+  const next = candidates[index + 1];
+  if (!next) return;
+  logger.warn(
+    {
+      requestedModel,
+      failedModel: modelId,
+      nextModel: exposedModelId(next),
+      reason,
+    },
+    `${adapter.label} falling back to the next provider in the group`,
+  );
+}
+
+/** Reports the outcome once every candidate has failed. */
+function sendExhausted(
+  reply: FastifyReply,
+  requestedModel: string,
+  isGroup: boolean,
+  failures: readonly AttemptFailure[],
+): void {
+  // Plain model requests keep their original, non-aggregated responses.
+  if (!isGroup) {
+    const failure = failures[0]!;
+    if (failure.kind === 'unconfigured') {
       reply
         .code(400)
         .send(
@@ -348,39 +485,104 @@ async function handleResponses(
         );
       return;
     }
-
-    const context = await buildResponsesContext(model, body);
-    const signal = createRequestSignal(request, reply);
-    const options = buildResponsesPiOptions(body, signal);
-
-    if (body.stream) {
-      await streamResponses(models, model, context, options, reply, request.log);
-      return;
-    }
-
-    const message = await models.completeSimple(model, context, options);
-    logModelResponse(request.log, model, message);
-    if (message.stopReason === 'error' || message.stopReason === 'aborted') {
-      reply
-        .code(502)
-        .send(createOpenAIError(message.errorMessage ?? 'Upstream model error', 'api_error'));
-      return;
-    }
-
-    reply.send(createResponsesResponse(model, message));
-  } catch (error) {
-    request.log.error({ err: error }, 'responses failed');
-    reply.code(500).send(createOpenAIError(errorMessage(error), 'api_error'));
+    reply
+      .code(failure.kind === 'upstream' ? 502 : 500)
+      .send(createOpenAIError(failure.message, 'api_error'));
+    return;
   }
+
+  const detail = failures
+    .map((failure) => `${exposedModelId(failure.model)}: ${failure.message}`)
+    .join('; ');
+
+  if (failures.every((failure) => failure.kind === 'unconfigured')) {
+    reply
+      .code(400)
+      .send(
+        createOpenAIError(
+          `No model in group "${requestedModel}" is configured (${detail})`,
+          'invalid_request_error',
+          'model_not_configured',
+        ),
+      );
+    return;
+  }
+
+  reply
+    .code(502)
+    .send(
+      createOpenAIError(`All models in group "${requestedModel}" failed (${detail})`, 'api_error'),
+    );
 }
 
-function createRequestSignal(request: FastifyRequest, reply: FastifyReply): AbortSignal {
+/**
+ * Aborts only when the client actually goes away.
+ *
+ * Both streams emit `close` on the happy path too: the request closes once its
+ * body has been read, and the reply closes once the response has been written.
+ * Treating those as disconnects cancels in-flight upstream calls, so each one
+ * is qualified by whether the transfer actually finished.
+ */
+export function createRequestSignal(request: FastifyRequest, reply: FastifyReply): AbortSignal {
   const controller = new AbortController();
   const abort = () => controller.abort();
+
   request.raw.once('aborted', abort);
-  request.raw.once('close', abort);
-  reply.raw.once('close', abort);
+  request.raw.once('close', () => {
+    if (!request.raw.complete) abort();
+  });
+  reply.raw.once('close', () => {
+    if (!reply.raw.writableEnded) abort();
+  });
+
   return controller.signal;
+}
+
+/**
+ * Starts an upstream stream, optionally holding back the response until the
+ * first event proves the provider is actually answering.
+ *
+ * With `allowFailover`, a failure reported as the very first event is raised as
+ * an `UpstreamAttemptError` while the response is still uncommitted, which lets
+ * the caller try the next provider in the group. Without it the stream is
+ * returned untouched and errors are reported inline on the SSE stream.
+ */
+async function beginStream(
+  models: MutableModels,
+  model: any,
+  context: any,
+  options: any,
+  allowFailover: boolean,
+): Promise<AsyncIterable<any>> {
+  const stream = models.streamSimple(model, context, options);
+  if (!allowFailover) return stream;
+
+  const iterator = stream[Symbol.asyncIterator]();
+  let first;
+  try {
+    first = await iterator.next();
+  } catch (error) {
+    throw new UpstreamAttemptError(errorMessage(error), error);
+  }
+
+  if (!first.done && first.value?.type === 'error') {
+    throw new UpstreamAttemptError(
+      first.value.error?.errorMessage ?? 'Upstream model error',
+      first.value.error,
+    );
+  }
+
+  return {
+    async *[Symbol.asyncIterator]() {
+      if (first.done) return;
+      yield first.value;
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) return;
+        yield next.value;
+      }
+    },
+  };
 }
 
 export async function streamChatCompletions(
@@ -390,7 +592,10 @@ export async function streamChatCompletions(
   options: any,
   reply: FastifyReply,
   logger: FastifyBaseLogger,
+  allowFailover = false,
 ) {
+  const stream = await beginStream(models, model, context, options, allowFailover);
+
   prepareSse(reply);
 
   const id = `chatcmpl_${randomUUID()}`;
@@ -398,8 +603,6 @@ export async function streamChatCompletions(
   const modelId = exposedModelId(model);
   const toolCallIndexes = new Map<number, number>();
   let nextToolCallIndex = 0;
-
-  const stream = models.streamSimple(model, context, options);
 
   writeSseData(reply, {
     id,
@@ -520,13 +723,15 @@ export async function streamResponses(
   options: any,
   reply: FastifyReply,
   logger: FastifyBaseLogger,
+  allowFailover = false,
 ) {
+  const stream = await beginStream(models, model, context, options, allowFailover);
+
   prepareSse(reply);
 
   const responseId = `resp_${randomUUID()}`;
   const modelId = exposedModelId(model);
   const createdAt = Math.floor(Date.now() / 1000);
-  const stream = models.streamSimple(model, context, options);
 
   const reasoningItems = new Map<number, { outputIndex: number; itemId: string }>();
   let assistantOutputIndex: number | undefined;

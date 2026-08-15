@@ -34,6 +34,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 - image input
 - tool calls
 - automatic OAuth credential refresh
+- model groups with automatic fallback
 - shared API key protection via `LLM_OAUTH_API_KEY`
 
 ## Install
@@ -102,6 +103,56 @@ Set `--oauth-refresh-before-expiry 0` to refresh only credentials that are alrea
 refreshed. A failed provider refresh is logged without token values and retried on a later check;
 request-time refresh remains available as a fallback.
 
+## Model groups
+
+A group is a virtual model backed by an ordered list of real models. Because providers give the
+same model different names, every member names its own model explicitly. Declare a group with a
+`LLM_OAUTH_GROUP_<NAME>` environment variable:
+
+```bash
+export LLM_OAUTH_GROUP_FREE=github-copilot:gpt-5.4-mini,openai-codex:gpt-5-mini
+pnpm loa serve --auth-file ./auth.json
+```
+
+The group name is itself the model id. Requesting `free` tries `github-copilot:gpt-5.4-mini` first
+and falls back to `openai-codex:gpt-5-mini` if that attempt fails:
+
+```bash
+curl http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer $LLM_OAUTH_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"free","messages":[{"role":"user","content":"hi"}]}'
+```
+
+Define one variable per virtual model to expose several of them:
+
+```bash
+export LLM_OAUTH_GROUP_FAST=github-copilot:gpt-5.4-mini,openai-codex:gpt-5-mini
+export LLM_OAUTH_GROUP_SMART=anthropic:claude-sonnet-4-5,opencode-go:claude-sonnet-4-5
+```
+
+A member written without a `:` names another group, which is spliced into its parent at that
+position:
+
+```bash
+export LLM_OAUTH_GROUP_FAST=github-copilot:gpt-5-mini,openai-codex:gpt-5.4-mini
+export LLM_OAUTH_GROUP_ALL=fast,google:gemini-2.5-pro
+```
+
+Here `all` tries `github-copilot:gpt-5-mini`, then `openai-codex:gpt-5.4-mini`, then
+`google:gemini-2.5-pro`, and `fast` remains requestable on its own.
+
+When every member fails, the response reports each attempt:
+
+```json
+{
+  "error": {
+    "message": "All models in group \"free\" failed (github-copilot:gpt-5.4-mini: rate limited; openai-codex:gpt-5-mini: upstream 500)",
+    "type": "api_error"
+  }
+}
+```
+
 Open `http://localhost:3000/` to use the browser-based API playground. Enter the shared API
 key, load a configured model, and test either `/chat/completions` or `/responses`. The key is
 kept in the current browser tab and is not persisted.
@@ -126,6 +177,8 @@ Models are exposed as `provider:model`, for example:
 - `nvidia:meta/llama-3.3-70b-instruct`
 - `openai-codex:gpt-5.4`
 - `opencode-go:claude-sonnet-4-5`
+
+Configured groups add a bare virtual model id, such as `free`. See [Model groups](#model-groups).
 
 Example chat completion:
 
