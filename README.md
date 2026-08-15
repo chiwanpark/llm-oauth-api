@@ -17,13 +17,13 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 
 ## Supported providers
 
-- `anthropic` (`claude-code`, `claude` aliases)
+- `anthropic`
 - `cerebras` (API-key based)
-- `github-copilot` (`copilot` alias)
-- `google` (`gemini`, `google-ai` aliases, API-key based)
-- `nvidia` (`nim`, `nvidia-nim` aliases, API-key based)
-- `openai-codex` (`codex` alias)
-- `opencode-go` (`opencode` alias, API-key based)
+- `github-copilot`
+- `google` (API-key based)
+- `nvidia` (API-key based)
+- `openai-codex`
+- `opencode-go` (API-key based)
 
 ## Features
 

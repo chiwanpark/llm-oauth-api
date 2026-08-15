@@ -40,7 +40,7 @@ const freeGroup: ModelGroup = {
 
 test('parses per-provider model names in declaration order', () => {
   const groups = parseModelGroups(
-    { [`${GROUP_ENV_PREFIX}FREE`]: 'copilot:gpt-5.4-mini, openai-codex:gpt-5-mini' },
+    { [`${GROUP_ENV_PREFIX}FREE`]: 'github-copilot:gpt-5.4-mini, openai-codex:gpt-5-mini' },
     allProviders,
   );
 
@@ -126,7 +126,7 @@ test('rejects a group whose name collides with a provider name', () => {
     /collides with a provider name/,
   );
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}CLAUDE`]: 'nvidia:x' }, allProviders),
+    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}OPENAI_CODEX`]: 'nvidia:x' }, allProviders),
     /collides with a provider name/,
   );
 });

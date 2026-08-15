@@ -26,32 +26,15 @@ const providerFactories: Record<SupportedProviderId, () => Provider> = {
   'opencode-go': opencodeGoProvider,
 };
 
-const aliases: Record<string, SupportedProviderId> = {
-  anthropic: 'anthropic',
-  claude: 'anthropic',
-  'claude-code': 'anthropic',
-  cerebras: 'cerebras',
-  copilot: 'github-copilot',
-  github: 'github-copilot',
-  'github-copilot': 'github-copilot',
-  gemini: 'google',
-  google: 'google',
-  'google-ai': 'google',
-  nim: 'nvidia',
-  nvidia: 'nvidia',
-  'nvidia-nim': 'nvidia',
-  codex: 'openai-codex',
-  'openai-codex': 'openai-codex',
-  opencode: 'opencode-go',
-  'opencode-go': 'opencode-go',
-};
-
 export function getSupportedProviderIds(): SupportedProviderId[] {
   return Object.keys(providerFactories) as SupportedProviderId[];
 }
 
 export function resolveProviderId(input: string): SupportedProviderId | undefined {
-  return aliases[input.trim().toLowerCase()];
+  const normalized = input.trim().toLowerCase();
+  return Object.hasOwn(providerFactories, normalized)
+    ? (normalized as SupportedProviderId)
+    : undefined;
 }
 
 export function createSupportedProvider(input: string): Provider {
