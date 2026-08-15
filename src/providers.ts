@@ -1,5 +1,6 @@
 import type { Provider } from '@earendil-works/pi-ai';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
+import { cerebrasProvider } from '@earendil-works/pi-ai/providers/cerebras';
 import { githubCopilotProvider } from '@earendil-works/pi-ai/providers/github-copilot';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { nvidiaProvider } from '@earendil-works/pi-ai/providers/nvidia';
@@ -7,10 +8,17 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go';
 
 export type SupportedProviderId =
-  'anthropic' | 'github-copilot' | 'google' | 'nvidia' | 'openai-codex' | 'opencode-go';
+  | 'anthropic'
+  | 'cerebras'
+  | 'github-copilot'
+  | 'google'
+  | 'nvidia'
+  | 'openai-codex'
+  | 'opencode-go';
 
 const providerFactories: Record<SupportedProviderId, () => Provider> = {
   anthropic: anthropicProvider,
+  cerebras: cerebrasProvider,
   'github-copilot': githubCopilotProvider,
   google: googleProvider,
   nvidia: nvidiaProvider,
@@ -22,6 +30,7 @@ const aliases: Record<string, SupportedProviderId> = {
   anthropic: 'anthropic',
   claude: 'anthropic',
   'claude-code': 'anthropic',
+  cerebras: 'cerebras',
   copilot: 'github-copilot',
   github: 'github-copilot',
   'github-copilot': 'github-copilot',

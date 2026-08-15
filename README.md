@@ -18,6 +18,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 ## Supported providers
 
 - `anthropic` (`claude-code`, `claude` aliases)
+- `cerebras` (API-key based)
 - `github-copilot` (`copilot` alias)
 - `google` (`gemini`, `google-ai` aliases, API-key based)
 - `nvidia` (`nim`, `nvidia-nim` aliases, API-key based)
@@ -50,6 +51,7 @@ Credentials are stored in a JSON file you choose.
 
 ```bash
 pnpm loa login anthropic --auth-file ./auth.json
+pnpm loa login cerebras --auth-file ./auth.json
 pnpm loa login github-copilot --auth-file ./auth.json
 pnpm loa login google --auth-file ./auth.json
 pnpm loa login nvidia --auth-file ./auth.json
@@ -59,6 +61,7 @@ pnpm loa login opencode-go --auth-file ./auth.json
 
 For Google/Gemini, this stores a Gemini API key. You can also provide it with the `GEMINI_API_KEY` environment variable.
 For NVIDIA NIM, this stores an NVIDIA API key. You can also provide it with the `NVIDIA_API_KEY` environment variable.
+For Cerebras, this stores a Cerebras API key. You can also provide it with the `CEREBRAS_API_KEY` environment variable.
 
 List supported providers:
 
@@ -84,7 +87,7 @@ Optional provider filtering:
 ```bash
 pnpm loa serve \
   --auth-file ./auth.json \
-  --providers anthropic,github-copilot,google,nvidia,openai-codex
+  --providers anthropic,cerebras,github-copilot,google,nvidia,openai-codex
 ```
 
 While the server is running, it checks stored OAuth credentials for enabled providers every 60
@@ -172,6 +175,7 @@ curl http://localhost:3000/v1/models \
 Models are exposed as `provider:model`, for example:
 
 - `anthropic:claude-sonnet-4-5`
+- `cerebras:gpt-oss-120b`
 - `github-copilot:gpt-5`
 - `google:gemini-2.5-pro`
 - `nvidia:meta/llama-3.3-70b-instruct`
