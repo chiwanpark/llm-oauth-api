@@ -24,6 +24,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 - `nvidia` (API-key based)
 - `openai-codex`
 - `opencode-go` (API-key based)
+- `openrouter` (OAuth or API-key based)
 
 ## Features
 
@@ -58,11 +59,20 @@ pnpm loa login google --auth-file ./auth.json
 pnpm loa login nvidia --auth-file ./auth.json
 pnpm loa login openai-codex --auth-file ./auth.json
 pnpm loa login opencode-go --auth-file ./auth.json
+pnpm loa login openrouter --auth-file ./auth.json
 ```
 
 For Google/Gemini, this stores a Gemini API key. You can also provide it with the `GEMINI_API_KEY` environment variable.
 For NVIDIA NIM, this stores an NVIDIA API key. You can also provide it with the `NVIDIA_API_KEY` environment variable.
 For Cerebras, this stores a Cerebras API key. You can also provide it with the `CEREBRAS_API_KEY` environment variable.
+For OpenRouter, the default login runs an OAuth flow that mints a durable key on your account. You
+can also provide an existing key with the `OPENROUTER_API_KEY` environment variable.
+
+Providers that support both flows default to OAuth. Use `--api-key` to store a key instead:
+
+```bash
+pnpm loa login openrouter --auth-file ./auth.json --api-key
+```
 
 List supported providers:
 
@@ -88,7 +98,7 @@ Optional provider filtering:
 ```bash
 pnpm loa serve \
   --auth-file ./auth.json \
-  --providers anthropic,cerebras,github-copilot,google,nvidia,openai-codex
+  --providers anthropic,cerebras,github-copilot,google,nvidia,openai-codex,openrouter
 ```
 
 While the server is running, it checks stored OAuth credentials for enabled providers every 60
@@ -182,6 +192,10 @@ Models are exposed as `provider:model`, for example:
 - `nvidia:meta/llama-3.3-70b-instruct`
 - `openai-codex:gpt-5.4`
 - `opencode-go:claude-sonnet-4-5`
+- `openrouter:anthropic/claude-sonnet-4.5`
+
+OpenRouter model ids contain their own `/` and sometimes a `:` variant suffix. Only the first `:`
+separates the provider, so `openrouter:deepseek/deepseek-r1:free` resolves as expected.
 
 Configured groups add a bare virtual model id, such as `free`. See [Model groups](#model-groups).
 

@@ -88,6 +88,35 @@ test('preserves model ids that contain separators', () => {
   ]);
 });
 
+test('keeps a variant suffix that is part of the model id', () => {
+  // OpenRouter names variants with a second colon, so only the first one may
+  // be read as the provider separator.
+  const groups = parseModelGroups(
+    { [`${GROUP_ENV_PREFIX}CHEAP`]: 'openrouter:deepseek/deepseek-r1:free' },
+    allProviders,
+  );
+
+  assert.deepEqual(groups[0]?.members, [
+    { providerId: 'openrouter', modelId: 'deepseek/deepseek-r1:free' },
+  ]);
+});
+
+test('routes a group to an OpenRouter model whose id contains a colon', () => {
+  const variant = model('openrouter', 'deepseek/deepseek-r1:free');
+  const candidates = resolveModelCandidates(
+    modelsWith([variant]),
+    [
+      {
+        name: 'cheap',
+        members: [{ providerId: 'openrouter', modelId: 'deepseek/deepseek-r1:free' }],
+      },
+    ],
+    'cheap',
+  );
+
+  assert.deepEqual(candidates, [variant]);
+});
+
 test('requires a model entry to name both a provider and a model', () => {
   // An entry containing a separator is a model reference, so a missing half is
   // a malformed model rather than a group reference.

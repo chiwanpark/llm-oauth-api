@@ -84,6 +84,7 @@ program
   .argument('<provider>', `Provider to authenticate (${getSupportedProviderIds().join(', ')})`)
   .requiredOption('--auth-file <path>', 'Path to auth JSON file')
   .option('--force', 'Overwrite existing credential without confirmation', false)
+  .option('--api-key', 'Store an API key instead of running the OAuth flow', false)
   .action(async (providerName, options) => {
     const provider = createSupportedProvider(providerName);
     const store = new JsonCredentialStore(options.authFile);
@@ -93,14 +94,20 @@ program
       if (!overwrite) return;
     }
 
+    // A few providers offer both flows; --api-key picks the key prompt so a
+    // headless session never has to complete a browser round trip.
+    const useApiKey = options.apiKey || !provider.auth.oauth;
+
     let credential;
-    if (provider.auth.oauth) {
+    if (useApiKey && provider.auth.apiKey?.login) {
+      credential = await provider.auth.apiKey.login(createCliAuthCallbacks());
+    } else if (options.apiKey) {
+      throw new Error(`Provider ${provider.id} does not support API-key login`);
+    } else if (provider.auth.oauth) {
       credential = {
         ...(await provider.auth.oauth.login(createCliAuthCallbacks())),
         type: 'oauth' as const,
       };
-    } else if (provider.auth.apiKey?.login) {
-      credential = await provider.auth.apiKey.login(createCliAuthCallbacks());
     } else {
       throw new Error(`Provider ${provider.id} does not support interactive login`);
     }

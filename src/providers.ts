@@ -6,6 +6,7 @@ import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { nvidiaProvider } from '@earendil-works/pi-ai/providers/nvidia';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go';
+import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 
 export type SupportedProviderId =
   | 'anthropic'
@@ -14,7 +15,8 @@ export type SupportedProviderId =
   | 'google'
   | 'nvidia'
   | 'openai-codex'
-  | 'opencode-go';
+  | 'opencode-go'
+  | 'openrouter';
 
 const providerFactories: Record<SupportedProviderId, () => Provider> = {
   anthropic: anthropicProvider,
@@ -24,6 +26,7 @@ const providerFactories: Record<SupportedProviderId, () => Provider> = {
   nvidia: nvidiaProvider,
   'openai-codex': openaiCodexProvider,
   'opencode-go': opencodeGoProvider,
+  openrouter: openrouterProvider,
 };
 
 export function getSupportedProviderIds(): SupportedProviderId[] {
