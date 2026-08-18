@@ -120,13 +120,22 @@ request-time refresh remains available as a fallback.
 ## Model groups
 
 A group is a virtual model backed by an ordered list of real models. Because providers give the
-same model different names, every member names its own model explicitly. Declare a group with a
-`LLM_OAUTH_GROUP_<NAME>` environment variable:
+same model different names, every member names its own model explicitly. Declare groups in a JSON
+file that maps each group name to its members, and point the server at it with `--groups-file`:
+
+```json
+{
+  "free": ["github-copilot:gpt-5.4-mini", "openai-codex:gpt-5-mini"]
+}
+```
 
 ```bash
-export LLM_OAUTH_GROUP_FREE=github-copilot:gpt-5.4-mini,openai-codex:gpt-5-mini
-pnpm loa serve --auth-file ./auth.json
+pnpm loa serve --auth-file ./auth.json --groups-file ./groups.json
 ```
+
+Without `--groups-file` the server exposes no groups. The file is read once at startup, and any
+problem in it — an unknown provider, a provider left out of `--providers`, a reference to a group
+that does not exist — stops the server with an error naming the file.
 
 The group name is itself the model id. Requesting `free` tries `github-copilot:gpt-5.4-mini` first
 and falls back to `openai-codex:gpt-5-mini` if that attempt fails:
@@ -138,23 +147,24 @@ curl http://localhost:3000/v1/chat/completions \
   -d '{"model":"free","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Define one variable per virtual model to expose several of them:
+Add one key per virtual model to expose several of them. A member written without a `:` names
+another group, which is spliced into its parent at that position:
 
-```bash
-export LLM_OAUTH_GROUP_FAST=github-copilot:gpt-5.4-mini,openai-codex:gpt-5-mini
-export LLM_OAUTH_GROUP_SMART=anthropic:claude-sonnet-4-5,opencode-go:claude-sonnet-4-5
-```
-
-A member written without a `:` names another group, which is spliced into its parent at that
-position:
-
-```bash
-export LLM_OAUTH_GROUP_FAST=github-copilot:gpt-5-mini,openai-codex:gpt-5.4-mini
-export LLM_OAUTH_GROUP_ALL=fast,google:gemini-2.5-pro
+```json
+{
+  "fast": ["github-copilot:gpt-5-mini", "openai-codex:gpt-5.4-mini"],
+  "smart": ["anthropic:claude-sonnet-4-5", "opencode-go:claude-sonnet-4-5"],
+  "all": ["fast", "google:gemini-2.5-pro"]
+}
 ```
 
 Here `all` tries `github-copilot:gpt-5-mini`, then `openai-codex:gpt-5.4-mini`, then
-`google:gemini-2.5-pro`, and `fast` remains requestable on its own.
+`google:gemini-2.5-pro`, and `fast` remains requestable on its own. Nesting may go any number of
+levels deep and groups may be declared in any order; a cycle is rejected at startup.
+
+A group name is also the model id clients request, so it is read case-insensitively and `_` reads
+as `-`: a key written `FAST_TIER` is requested as `fast-tier`. A name that matches a provider, such
+as `google`, is rejected.
 
 ### Cooldown for failing models
 

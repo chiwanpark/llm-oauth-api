@@ -1,10 +1,13 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import type { Model, MutableModels } from '@earendil-works/pi-ai';
 
 import { resolveModelByName, type OpenAIModelInfo } from './openai-compat.js';
 import { resolveProviderId, type SupportedProviderId } from './providers.js';
 
-/** Environment variable prefix that declares a model group. */
-export const GROUP_ENV_PREFIX = 'LLM_OAUTH_GROUP_';
+/** Label used in errors when groups did not come from a file on disk. */
+const DEFAULT_SOURCE = 'the groups file';
 
 /** One concrete upstream model that a group can route to. */
 export type GroupMember = {
@@ -34,22 +37,23 @@ type RawMember =
 
 type RawGroup = {
   name: string;
-  /** Environment variable that declared this group, for error messages. */
-  key: string;
   members: RawMember[];
 };
 
 /**
- * Derives a group name from an environment variable suffix.
+ * Groups a client can request, as written in the JSON file.
  *
- * `LLM_OAUTH_GROUP_FAST_TIER` becomes `fast-tier` so that group names look like
- * the model ids they sit alongside.
+ * Each key is a group name and each entry is either `<provider>:<model>` or the
+ * name of another group declared in the same file.
  */
-function groupNameFromEnvKey(key: string): string {
-  return normalizeGroupName(key.slice(GROUP_ENV_PREFIX.length));
-}
+export type ModelGroupsConfig = Record<string, readonly string[]>;
 
-/** Group names are written as env suffixes, so accept either separator. */
+/**
+ * Group names double as model ids, so they are compared in one canonical form.
+ *
+ * `FAST_TIER` and `fast-tier` name the same group, which keeps a reference
+ * readable regardless of how the declaring key was written.
+ */
 function normalizeGroupName(value: string): string {
   return value.trim().toLowerCase().replaceAll('_', '-');
 }
@@ -67,67 +71,122 @@ function parseMember(entry: string): { provider: string; modelId: string } | und
 }
 
 /**
- * Reads `LLM_OAUTH_GROUP_*` variables into validated groups.
+ * Reads a groups file into validated groups.
  *
  * Every failure is a startup-time configuration error: a silently dropped or
  * partially applied group would surface much later as a confusing "unknown
  * model" or an unexpected provider serving the request.
  */
-export function parseModelGroups(
-  env: Record<string, string | undefined>,
+export async function loadModelGroups(
+  filePath: string,
   enabledProviderIds: readonly SupportedProviderId[],
-): ModelGroup[] {
-  const raw = parseRawGroups(env, enabledProviderIds);
-  assertGroupReferencesExist(raw);
-  return flattenGroups(raw);
+): Promise<ModelGroup[]> {
+  const resolved = path.resolve(filePath);
+
+  let raw: string;
+  try {
+    raw = await readFile(resolved, 'utf8');
+  } catch (error) {
+    // An explicitly requested file that is missing is a mistake worth naming,
+    // not a reason to start up with no groups at all.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Groups file not found: ${resolved}`, { cause: error });
+    }
+    throw new Error(`Cannot read groups file ${resolved}: ${describeError(error)}`, {
+      cause: error,
+    });
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${resolved} is not valid JSON: ${describeError(error)}`, { cause: error });
+  }
+
+  return parseModelGroups(parsed, enabledProviderIds, resolved);
 }
 
-/** First pass: read each variable without resolving references between groups. */
-function parseRawGroups(
-  env: Record<string, string | undefined>,
+/**
+ * Validates already-parsed groups configuration.
+ *
+ * `source` only shapes error messages, so callers that did not read a file can
+ * leave it out.
+ */
+export function parseModelGroups(
+  config: unknown,
   enabledProviderIds: readonly SupportedProviderId[],
+  source: string = DEFAULT_SOURCE,
+): ModelGroup[] {
+  const raw = parseRawGroups(config, enabledProviderIds, source);
+  assertGroupReferencesExist(raw, source);
+  return flattenGroups(raw, source);
+}
+
+/** First pass: read each declaration without resolving references between groups. */
+function parseRawGroups(
+  config: unknown,
+  enabledProviderIds: readonly SupportedProviderId[],
+  source: string,
 ): Map<string, RawGroup> {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error(
+      `${source} must contain a JSON object mapping group names to arrays of ` +
+        '"<provider>:<model>" entries',
+    );
+  }
+
   const enabled = new Set<string>(enabledProviderIds);
   const groups = new Map<string, RawGroup>();
   const sources = new Map<string, string>();
 
-  for (const key of Object.keys(env).sort()) {
-    if (!key.startsWith(GROUP_ENV_PREFIX)) continue;
-
-    const raw = env[key];
-    const name = groupNameFromEnvKey(key);
+  // Object key order is the declaration order, which is what /v1/models lists.
+  for (const [key, value] of Object.entries(config as Record<string, unknown>)) {
+    const name = normalizeGroupName(key);
 
     if (!name) {
-      throw new Error(`${key} does not specify a group name (expected ${GROUP_ENV_PREFIX}<NAME>)`);
+      throw new Error(`${source} declares a group with an empty name`);
     }
     if (!VALID_GROUP_NAME.test(name)) {
       throw new Error(
-        `${key} defines an invalid group name "${name}"; the part after ` +
-          `${GROUP_ENV_PREFIX} may only contain letters, digits, and underscores`,
+        `${source} declares an invalid group name "${key}"; a group name may only ` +
+          'contain letters, digits, hyphens, and underscores',
       );
     }
     if (resolveProviderId(name)) {
       throw new Error(
-        `${key} defines the group "${name}", which collides with a provider name; ` +
+        `${source} declares the group "${name}", which collides with a provider name; ` +
           'pick a name that reads as a model id',
       );
     }
     const duplicate = sources.get(name);
     if (duplicate) {
-      throw new Error(`${key} and ${duplicate} both define the group "${name}"`);
+      throw new Error(
+        `${source} declares the group "${name}" twice, as "${duplicate}" and "${key}"`,
+      );
     }
 
-    const entries = (raw ?? '')
-      .split(',')
-      .map((part) => part.trim())
-      .filter(Boolean);
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+      throw new Error(`${source} group "${name}" must be an array of "<provider>:<model>" strings`);
+    }
+
+    const entries = (value as string[]).map((entry) => entry.trim()).filter(Boolean);
     if (!entries.length) {
-      throw new Error(`${key} must list at least one provider:model entry`);
+      throw new Error(`${source} group "${name}" must list at least one provider:model entry`);
     }
 
     const members: RawMember[] = entries.map((entry) => {
+      // Each array element is exactly one member, so a comma is a leftover from
+      // the old single-string syntax rather than part of a model id.
+      if (entry.includes(',')) {
+        throw new Error(
+          `${source} group "${name}" entry "${entry}" contains a comma; ` +
+            'list each member as its own array element',
+        );
+      }
+
       // No separator at all means the entry names another group; whether it
-      // exists is checked once every variable has been read, so declaration
+      // exists is checked once every declaration has been read, so declaration
       // order does not matter. An entry that does contain a separator is a
       // model reference and must be well formed.
       if (!entry.includes(':')) {
@@ -137,19 +196,21 @@ function parseRawGroups(
       const parsed = parseMember(entry);
       if (!parsed) {
         throw new Error(
-          `${key} entry "${entry}" must be written as <provider>:<model>, ` +
+          `${source} group "${name}" entry "${entry}" must be written as <provider>:<model>, ` +
             'because providers name the same model differently',
         );
       }
 
       const providerId = resolveProviderId(parsed.provider);
       if (!providerId) {
-        throw new Error(`${key} refers to an unsupported provider: ${parsed.provider}`);
+        throw new Error(
+          `${source} group "${name}" refers to an unsupported provider: ${parsed.provider}`,
+        );
       }
       if (!enabled.has(providerId)) {
         throw new Error(
-          `${key} refers to the provider "${providerId}", which is not enabled; ` +
-            'add it to --providers or remove it from the group',
+          `${source} group "${name}" refers to the provider "${providerId}", which is not ` +
+            'enabled; add it to --providers or remove it from the group',
         );
       }
 
@@ -157,14 +218,18 @@ function parseRawGroups(
     });
 
     sources.set(name, key);
-    groups.set(name, { name, key, members });
+    groups.set(name, { name, members });
   }
 
   return groups;
 }
 
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** Second pass: every referenced group must exist, in any declaration order. */
-function assertGroupReferencesExist(groups: ReadonlyMap<string, RawGroup>): void {
+function assertGroupReferencesExist(groups: ReadonlyMap<string, RawGroup>, source: string): void {
   for (const group of groups.values()) {
     for (const member of group.members) {
       if (member.kind !== 'group' || groups.has(member.name)) continue;
@@ -172,14 +237,14 @@ function assertGroupReferencesExist(groups: ReadonlyMap<string, RawGroup>): void
       // A bare provider name is the most likely mistake, so name the fix.
       if (resolveProviderId(member.text)) {
         throw new Error(
-          `${group.key} entry "${member.text}" names a provider, not a group; ` +
-            'list a concrete model as <provider>:<model>',
+          `${source} group "${group.name}" entry "${member.text}" names a provider, not a ` +
+            'group; list a concrete model as <provider>:<model>',
         );
       }
       throw new Error(
-        `${group.key} refers to the group "${member.name}", which is not declared; ` +
-          `define ${GROUP_ENV_PREFIX}${member.name.replaceAll('-', '_').toUpperCase()} ` +
-          'or write a concrete model as <provider>:<model>',
+        `${source} group "${group.name}" refers to the group "${member.name}", which is not ` +
+          `declared; add "${member.name}" to the groups file or write a concrete model as ` +
+          '<provider>:<model>',
       );
     }
   }
@@ -192,7 +257,7 @@ function assertGroupReferencesExist(groups: ReadonlyMap<string, RawGroup>): void
  * turns cycle detection into a by-product of the walk, so a cyclic
  * configuration can never reach a request.
  */
-function flattenGroups(groups: ReadonlyMap<string, RawGroup>): ModelGroup[] {
+function flattenGroups(groups: ReadonlyMap<string, RawGroup>, source: string): ModelGroup[] {
   const resolved = new Map<string, GroupMember[]>();
   const visiting: string[] = [];
 
@@ -203,7 +268,7 @@ function flattenGroups(groups: ReadonlyMap<string, RawGroup>): ModelGroup[] {
     const cycleStart = visiting.indexOf(name);
     if (cycleStart !== -1) {
       const cycle = [...visiting.slice(cycleStart), name].join(' -> ');
-      throw new Error(`${GROUP_ENV_PREFIX}* groups form a cycle: ${cycle}`);
+      throw new Error(`Groups in ${source} form a cycle: ${cycle}`);
     }
 
     const group = groups.get(name)!;

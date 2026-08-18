@@ -8,7 +8,7 @@ import {
   DEFAULT_OAUTH_REFRESH_INTERVAL_MS,
   parseRefreshSeconds,
 } from './oauth-refresh.js';
-import { GROUP_ENV_PREFIX, parseModelGroups } from './groups.js';
+import { loadModelGroups } from './groups.js';
 import { DEFAULT_MODEL_COOLDOWN_MS, parseCooldownSeconds } from './model-cooldown.js';
 import {
   createSupportedProvider,
@@ -31,6 +31,7 @@ program
     'Comma-separated providers to expose',
     getSupportedProviderIds().join(','),
   )
+  .option('--groups-file <path>', 'Path to JSON file defining model groups')
   .option('--port <port>', 'Port to listen on', '3000')
   .option('--host <host>', 'Host to listen on', '0.0.0.0')
   .addOption(
@@ -61,8 +62,8 @@ program
   .addHelpText(
     'after',
     '\nModel groups:\n' +
-      `  Set ${GROUP_ENV_PREFIX}<NAME>=<provider>:<model>,... to expose a fallback model.\n` +
-      `  e.g. ${GROUP_ENV_PREFIX}FREE=github-copilot:gpt-5.4-mini,openai-codex:gpt-5-mini\n` +
+      '  Pass --groups-file <path> to a JSON object mapping a group name to its members.\n' +
+      '  e.g. {"free": ["github-copilot:gpt-5.4-mini", "openai-codex:gpt-5-mini"]}\n' +
       '  makes the model "free" try github-copilot first and fall back to openai-codex.\n' +
       '  An entry without a ":" names another group and is flattened into its parent.\n' +
       '  A member that fails is skipped for --model-cooldown seconds afterwards.',
@@ -74,7 +75,9 @@ program
     }
 
     const providerIds = splitCsv(options.providers);
-    const groups = parseModelGroups(process.env, resolveSupportedProviderIds(providerIds));
+    const groups = options.groupsFile
+      ? await loadModelGroups(options.groupsFile, resolveSupportedProviderIds(providerIds))
+      : [];
 
     await startServer({
       authFile: options.authFile,

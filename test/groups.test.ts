@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 
 import type { Model, MutableModels } from '@earendil-works/pi-ai';
 
 import {
-  GROUP_ENV_PREFIX,
   describeGroup,
   findGroup,
   groupModelEntries,
+  loadModelGroups,
   parseModelGroups,
   resolveModelCandidates,
   type ModelGroup,
@@ -28,6 +31,20 @@ function modelsWith(entries: readonly Model<any>[]): MutableModels {
   } as unknown as MutableModels;
 }
 
+function tempDir(): Promise<string> {
+  return mkdtemp(path.join(tmpdir(), 'loa-groups-'));
+}
+
+async function writeGroupsFile(config: unknown): Promise<string> {
+  const file = path.join(await tempDir(), 'groups.json');
+  await writeFile(file, JSON.stringify(config, null, 2), 'utf8');
+  return file;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+}
+
 // The whole point of model-level groups: the same model is named differently
 // by each provider.
 const freeGroup: ModelGroup = {
@@ -40,33 +57,41 @@ const freeGroup: ModelGroup = {
 
 test('parses per-provider model names in declaration order', () => {
   const groups = parseModelGroups(
-    { [`${GROUP_ENV_PREFIX}FREE`]: 'github-copilot:gpt-5.4-mini, openai-codex:gpt-5-mini' },
+    { free: ['github-copilot:gpt-5.4-mini', 'openai-codex:gpt-5-mini'] },
     allProviders,
   );
 
   assert.deepEqual(groups, [freeGroup]);
 });
 
-test('derives hyphenated group names and ignores unrelated variables', () => {
-  const groups = parseModelGroups(
-    {
-      PATH: '/usr/bin',
-      LLM_OAUTH_API_KEY: 'secret',
-      [`${GROUP_ENV_PREFIX}FAST_TIER`]: 'google:gemini-2.5-pro',
-    },
-    allProviders,
-  );
+test('normalizes a declared group name into a model id', () => {
+  // A name is written however the author likes; it is read as one model id.
+  const groups = parseModelGroups({ FAST_TIER: ['google:gemini-2.5-pro'] }, allProviders);
 
   assert.deepEqual(groups, [
     { name: 'fast-tier', members: [{ providerId: 'google', modelId: 'gemini-2.5-pro' }] },
   ]);
 });
 
+test('keeps groups in the order they are declared in the file', () => {
+  const groups = parseModelGroups(
+    {
+      smart: ['google:gemini-2.5-pro'],
+      free: ['nvidia:some-model'],
+    },
+    allProviders,
+  );
+
+  assert.deepEqual(
+    groups.map((group) => group.name),
+    ['smart', 'free'],
+  );
+});
+
 test('keeps distinct models from one provider but drops exact duplicates', () => {
   const groups = parseModelGroups(
     {
-      [`${GROUP_ENV_PREFIX}FREE`]:
-        'google:gemini-2.5-pro,google:gemini-2.5-pro,google:gemini-2.5-flash',
+      free: ['google:gemini-2.5-pro', 'google:gemini-2.5-pro', 'google:gemini-2.5-flash'],
     },
     allProviders,
   );
@@ -78,10 +103,7 @@ test('keeps distinct models from one provider but drops exact duplicates', () =>
 });
 
 test('preserves model ids that contain separators', () => {
-  const groups = parseModelGroups(
-    { [`${GROUP_ENV_PREFIX}LLAMA`]: 'nvidia:meta/llama-3.3-70b-instruct' },
-    allProviders,
-  );
+  const groups = parseModelGroups({ llama: ['nvidia:meta/llama-3.3-70b-instruct'] }, allProviders);
 
   assert.deepEqual(groups[0]?.members, [
     { providerId: 'nvidia', modelId: 'meta/llama-3.3-70b-instruct' },
@@ -92,7 +114,7 @@ test('keeps a variant suffix that is part of the model id', () => {
   // OpenRouter names variants with a second colon, so only the first one may
   // be read as the provider separator.
   const groups = parseModelGroups(
-    { [`${GROUP_ENV_PREFIX}CHEAP`]: 'openrouter:deepseek/deepseek-r1:free' },
+    { cheap: ['openrouter:deepseek/deepseek-r1:free'] },
     allProviders,
   );
 
@@ -121,11 +143,11 @@ test('requires a model entry to name both a provider and a model', () => {
   // An entry containing a separator is a model reference, so a missing half is
   // a malformed model rather than a group reference.
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}FREE`]: 'github-copilot:' }, allProviders),
+    () => parseModelGroups({ free: ['github-copilot:'] }, allProviders),
     /must be written as <provider>:<model>/,
   );
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}FREE`]: ':gpt-5.4-mini' }, allProviders),
+    () => parseModelGroups({ free: [':gpt-5.4-mini'] }, allProviders),
     /must be written as <provider>:<model>/,
   );
 });
@@ -133,60 +155,93 @@ test('requires a model entry to name both a provider and a model', () => {
 test('rejects a bare provider name by pointing at the model syntax', () => {
   // Bare entries are group references now, so a provider name is not one.
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}FREE`]: 'github-copilot' }, allProviders),
+    () => parseModelGroups({ free: ['github-copilot'] }, allProviders),
     /names a provider, not a group; list a concrete model as <provider>:<model>/,
   );
 });
 
 test('rejects a reference to a group that was never declared', () => {
   assert.throws(
-    () =>
-      parseModelGroups(
-        { [`${GROUP_ENV_PREFIX}FREE`]: 'google:gemini-2.5-pro,missing-tier' },
-        allProviders,
-      ),
+    () => parseModelGroups({ free: ['google:gemini-2.5-pro', 'missing-tier'] }, allProviders),
     /refers to the group "missing-tier", which is not declared/,
   );
 });
 
 test('rejects a group whose name collides with a provider name', () => {
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}GOOGLE`]: 'nvidia:x' }, allProviders),
+    () => parseModelGroups({ google: ['nvidia:x'] }, allProviders),
     /collides with a provider name/,
   );
+  // The collision is judged on the normalized name, not the raw key.
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}OPENAI_CODEX`]: 'nvidia:x' }, allProviders),
+    () => parseModelGroups({ OPENAI_CODEX: ['nvidia:x'] }, allProviders),
     /collides with a provider name/,
   );
 });
 
 test('rejects unknown, empty, and disabled members', () => {
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}FREE`]: 'not-a-provider:x' }, allProviders),
+    () => parseModelGroups({ free: ['not-a-provider:x'] }, allProviders),
     /unsupported provider: not-a-provider/,
   );
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}FREE`]: '  ,  ' }, allProviders),
+    () => parseModelGroups({ free: ['  ', ' '] }, allProviders),
+    /must list at least one provider:model entry/,
+  );
+  assert.throws(
+    () => parseModelGroups({ free: [] }, allProviders),
     /must list at least one provider:model entry/,
   );
   assert.throws(
     () =>
-      parseModelGroups(
-        { [`${GROUP_ENV_PREFIX}FREE`]: 'google:a,nvidia:b' },
-        resolveSupportedProviderIds(['google']),
-      ),
+      parseModelGroups({ free: ['google:a', 'nvidia:b'] }, resolveSupportedProviderIds(['google'])),
     /"nvidia", which is not enabled/,
   );
 });
 
 test('rejects a group name that cannot be used as a model id', () => {
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}BAD.NAME`]: 'google:x' }, allProviders),
+    () => parseModelGroups({ 'BAD.NAME': ['google:x'] }, allProviders),
     /invalid group name/,
   );
+  assert.throws(() => parseModelGroups({ '': ['google:x'] }, allProviders), /an empty name/);
+  assert.throws(() => parseModelGroups({ '  ': ['google:x'] }, allProviders), /an empty name/);
+});
+
+test('rejects two keys that name the same group', () => {
   assert.throws(
-    () => parseModelGroups({ [GROUP_ENV_PREFIX]: 'google:x' }, allProviders),
-    /does not specify a group name/,
+    () =>
+      parseModelGroups(
+        { FAST_TIER: ['google:gemini-2.5-pro'], 'fast-tier': ['nvidia:some-model'] },
+        allProviders,
+      ),
+    /declares the group "fast-tier" twice/,
+  );
+});
+
+test('rejects a file that is not an object of member arrays', () => {
+  for (const config of [null, 'free', 42, ['google:x']]) {
+    assert.throws(
+      () => parseModelGroups(config, allProviders),
+      /must contain a JSON object mapping group names to arrays/,
+    );
+  }
+
+  // A single string is the shape the old environment variables used.
+  assert.throws(
+    () => parseModelGroups({ free: 'google:gemini-2.5-pro' }, allProviders),
+    /must be an array of "<provider>:<model>" strings/,
+  );
+  assert.throws(
+    () => parseModelGroups({ free: ['google:gemini-2.5-pro', 7] }, allProviders),
+    /must be an array of "<provider>:<model>" strings/,
+  );
+});
+
+test('rejects a comma-separated entry by pointing at the array syntax', () => {
+  assert.throws(
+    () => parseModelGroups({ free: ['google:gemini-2.5-pro,nvidia:some-model'] }, allProviders),
+    /contains a comma; list each member as its own array element/,
   );
 });
 
@@ -257,8 +312,8 @@ test('describes a group as its provider:model members', () => {
 test('flattens a nested group into its parent in declaration order', () => {
   const groups = parseModelGroups(
     {
-      [`${GROUP_ENV_PREFIX}FAST`]: 'github-copilot:gpt-5-mini,openai-codex:gpt-5.4-mini',
-      [`${GROUP_ENV_PREFIX}ALL`]: 'google:gemini-2.5-pro,fast,nvidia:some-model',
+      fast: ['github-copilot:gpt-5-mini', 'openai-codex:gpt-5.4-mini'],
+      all: ['google:gemini-2.5-pro', 'fast', 'nvidia:some-model'],
     },
     allProviders,
   );
@@ -278,11 +333,11 @@ test('flattens a nested group into its parent in declaration order', () => {
 });
 
 test('resolves references declared in any order', () => {
-  // "all" is read before "fast" because variables are processed sorted.
+  // "all" refers to "fast" before the file declares it.
   const groups = parseModelGroups(
     {
-      [`${GROUP_ENV_PREFIX}ALL`]: 'fast',
-      [`${GROUP_ENV_PREFIX}FAST`]: 'google:gemini-2.5-pro',
+      all: ['fast'],
+      fast: ['google:gemini-2.5-pro'],
     },
     allProviders,
   );
@@ -295,9 +350,9 @@ test('resolves references declared in any order', () => {
 test('flattens nesting several levels deep', () => {
   const groups = parseModelGroups(
     {
-      [`${GROUP_ENV_PREFIX}A`]: 'b',
-      [`${GROUP_ENV_PREFIX}B`]: 'c',
-      [`${GROUP_ENV_PREFIX}C`]: 'google:gemini-2.5-pro',
+      a: ['b'],
+      b: ['c'],
+      c: ['google:gemini-2.5-pro'],
     },
     allProviders,
   );
@@ -310,9 +365,9 @@ test('flattens nesting several levels deep', () => {
 test('matches nested references by their normalized name', () => {
   const groups = parseModelGroups(
     {
-      [`${GROUP_ENV_PREFIX}FAST_TIER`]: 'google:gemini-2.5-pro',
-      [`${GROUP_ENV_PREFIX}ALL`]: 'FAST_TIER',
-      [`${GROUP_ENV_PREFIX}ALSO`]: 'fast-tier',
+      'fast-tier': ['google:gemini-2.5-pro'],
+      all: ['FAST_TIER'],
+      also: ['fast-tier'],
     },
     allProviders,
   );
@@ -325,8 +380,8 @@ test('matches nested references by their normalized name', () => {
 test('keeps the earliest position when nesting repeats a model', () => {
   const groups = parseModelGroups(
     {
-      [`${GROUP_ENV_PREFIX}FAST`]: 'google:gemini-2.5-pro,nvidia:some-model',
-      [`${GROUP_ENV_PREFIX}ALL`]: 'fast,google:gemini-2.5-pro',
+      fast: ['google:gemini-2.5-pro', 'nvidia:some-model'],
+      all: ['fast', 'google:gemini-2.5-pro'],
     },
     allProviders,
   );
@@ -340,10 +395,10 @@ test('keeps the earliest position when nesting repeats a model', () => {
 test('lets two groups share a nested group without duplicating it', () => {
   const groups = parseModelGroups(
     {
-      [`${GROUP_ENV_PREFIX}SHARED`]: 'google:gemini-2.5-pro',
-      [`${GROUP_ENV_PREFIX}LEFT`]: 'shared,nvidia:a',
-      [`${GROUP_ENV_PREFIX}RIGHT`]: 'shared,nvidia:b',
-      [`${GROUP_ENV_PREFIX}BOTH`]: 'left,right',
+      shared: ['google:gemini-2.5-pro'],
+      left: ['shared', 'nvidia:a'],
+      right: ['shared', 'nvidia:b'],
+      both: ['left', 'right'],
     },
     allProviders,
   );
@@ -358,19 +413,15 @@ test('lets two groups share a nested group without duplicating it', () => {
 
 test('detects a self-referencing group at startup', () => {
   assert.throws(
-    () => parseModelGroups({ [`${GROUP_ENV_PREFIX}LOOP`]: 'loop' }, allProviders),
-    /groups form a cycle: loop -> loop/,
+    () => parseModelGroups({ loop: ['loop'] }, allProviders),
+    /form a cycle: loop -> loop/,
   );
 });
 
 test('detects a mutual cycle at startup', () => {
   assert.throws(
-    () =>
-      parseModelGroups(
-        { [`${GROUP_ENV_PREFIX}A`]: 'b', [`${GROUP_ENV_PREFIX}B`]: 'a' },
-        allProviders,
-      ),
-    /groups form a cycle: a -> b -> a/,
+    () => parseModelGroups({ a: ['b'], b: ['a'] }, allProviders),
+    /form a cycle: a -> b -> a/,
   );
 });
 
@@ -379,12 +430,52 @@ test('detects a deep cycle and reports the path', () => {
     () =>
       parseModelGroups(
         {
-          [`${GROUP_ENV_PREFIX}A`]: 'google:gemini-2.5-pro,b',
-          [`${GROUP_ENV_PREFIX}B`]: 'c',
-          [`${GROUP_ENV_PREFIX}C`]: 'b',
+          a: ['google:gemini-2.5-pro', 'b'],
+          b: ['c'],
+          c: ['b'],
         },
         allProviders,
       ),
-    /groups form a cycle: b -> c -> b/,
+    /form a cycle: b -> c -> b/,
   );
+});
+
+test('reads groups from a JSON file', async () => {
+  const file = await writeGroupsFile({
+    fast: ['github-copilot:gpt-5-mini'],
+    all: ['fast', 'google:gemini-2.5-pro'],
+  });
+
+  assert.deepEqual(await loadModelGroups(file, allProviders), [
+    { name: 'fast', members: [{ providerId: 'github-copilot', modelId: 'gpt-5-mini' }] },
+    {
+      name: 'all',
+      members: [
+        { providerId: 'github-copilot', modelId: 'gpt-5-mini' },
+        { providerId: 'google', modelId: 'gemini-2.5-pro' },
+      ],
+    },
+  ]);
+});
+
+test('names the file in a configuration error', async () => {
+  const file = await writeGroupsFile({ free: ['not-a-provider:x'] });
+
+  await assert.rejects(
+    () => loadModelGroups(file, allProviders),
+    (error: Error) =>
+      error.message.startsWith(file) && /unsupported provider: not-a-provider/.test(error.message),
+  );
+});
+
+test('reports a missing or malformed file instead of starting without groups', async () => {
+  const missing = path.join(await tempDir(), 'absent.json');
+  await assert.rejects(
+    () => loadModelGroups(missing, allProviders),
+    new RegExp(`Groups file not found: ${escapeRegExp(missing)}`),
+  );
+
+  const broken = path.join(await tempDir(), 'groups.json');
+  await writeFile(broken, '{ "free": [ ', 'utf8');
+  await assert.rejects(() => loadModelGroups(broken, allProviders), /is not valid JSON/);
 });
