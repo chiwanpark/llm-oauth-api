@@ -14,6 +14,14 @@ import type {
   UserMessage,
 } from '@earendil-works/pi-ai';
 
+import {
+  ENCRYPTED_REASONING_INCLUDE,
+  reasoningDetailsFromThinking,
+  reasoningItemFromThinking,
+  thinkingFromReasoningDetails,
+  thinkingFromReasoningItem,
+} from './reasoning.js';
+
 export type OpenAIModelInfo = {
   id: string;
   object: 'model';
@@ -83,8 +91,38 @@ export function assistantText(message: AssistantMessage): string {
     .join('');
 }
 
-function assistantThinking(message: AssistantMessage): ThinkingContent[] {
+export function assistantThinking(message: AssistantMessage): ThinkingContent[] {
   return message.content.filter((block): block is ThinkingContent => block.type === 'thinking');
+}
+
+export type RenderOptions = {
+  /**
+   * Whether the client asked for the provider's reasoning continuation data.
+   * Mirrors the Responses API, which omits `encrypted_content` unless it is
+   * named in `include`.
+   */
+  includeEncryptedReasoning?: boolean;
+  /** Chat Completions reports stream usage only under `stream_options`. */
+  includeUsage?: boolean;
+  /** The request, whose parameters the Responses API echoes on its response. */
+  request?: any;
+};
+
+export function buildRenderOptions(body: any): RenderOptions {
+  const include = Array.isArray(body?.include) ? body.include : [];
+  return {
+    includeEncryptedReasoning: include.includes(ENCRYPTED_REASONING_INCLUDE),
+    includeUsage: body?.stream_options?.include_usage === true,
+    request: body,
+  };
+}
+
+/**
+ * Chat Completions has no `include`, so reasoning continuation data always
+ * rides along as `reasoning_details` the way the wider ecosystem does it.
+ */
+export function chatReasoningDetails(model: Model<any>, message: AssistantMessage) {
+  return reasoningDetailsFromThinking(model, assistantThinking(message));
 }
 
 export function assistantReasoning(message: AssistantMessage): string {
@@ -104,12 +142,24 @@ export function assistantUsage(message: AssistantMessage) {
     total_tokens: message.usage.totalTokens,
     prompt_tokens_details: {
       cached_tokens: message.usage.cacheRead,
+      audio_tokens: 0,
     },
     completion_tokens_details: {
       reasoning_tokens: message.usage.reasoning ?? 0,
+      audio_tokens: 0,
+      accepted_prediction_tokens: 0,
+      rejected_prediction_tokens: 0,
     },
   };
 }
+
+/**
+ * Fields OpenAI reports on every completion. Nothing here is negotiated with
+ * the provider, so they are constant: no tier is selected, and there is no
+ * backend build to fingerprint.
+ */
+const SERVICE_TIER = 'default';
+const SYSTEM_FINGERPRINT = null;
 
 export async function buildChatContext(model: Model<any>, body: any): Promise<Context> {
   const systemPrompts: string[] = [];
@@ -172,6 +222,16 @@ export async function buildResponsesContext(model: Model<any>, body: any): Promi
     systemPrompts.push(body.instructions.trim());
   }
 
+  // Reasoning items precede the assistant turn they belong to, but pi-ai keeps
+  // thinking inside that assistant message, so they are held until the turn
+  // they introduce shows up.
+  let pendingThinking: ThinkingContent[] = [];
+  const takeThinking = (): ThinkingContent[] => {
+    const taken = pendingThinking;
+    pendingThinking = [];
+    return taken;
+  };
+
   const input = body.input;
   if (typeof input === 'string') {
     messages.push({ role: 'user', content: input, timestamp: now });
@@ -179,6 +239,12 @@ export async function buildResponsesContext(model: Model<any>, body: any): Promi
     for (let index = 0; index < input.length; index += 1) {
       const item = input[index];
       const timestamp = now + index;
+
+      if (item?.type === 'reasoning') {
+        const thinking = thinkingFromReasoningItem(model, item);
+        if (thinking) pendingThinking.push(thinking);
+        continue;
+      }
 
       if (item?.type === 'function_call_output') {
         messages.push({
@@ -194,7 +260,7 @@ export async function buildResponsesContext(model: Model<any>, body: any): Promi
 
       if (item?.type === 'function_call') {
         const call = normalizeToolCall(item, item.call_id ?? randomUUID());
-        messages.push(createAssistantHistoryMessage(model, [call], timestamp));
+        messages.push(createAssistantHistoryMessage(model, [...takeThinking(), call], timestamp));
         continue;
       }
 
@@ -214,7 +280,9 @@ export async function buildResponsesContext(model: Model<any>, body: any): Promi
           continue;
         }
         if (role === 'assistant') {
-          messages.push(await normalizeAssistantHistoryMessage(model, item, timestamp));
+          messages.push(
+            await normalizeAssistantHistoryMessage(model, item, timestamp, takeThinking()),
+          );
           continue;
         }
       }
@@ -224,6 +292,10 @@ export async function buildResponsesContext(model: Model<any>, body: any): Promi
   } else if (input != null) {
     throw new Error('Responses input must be a string or an array');
   }
+
+  // Reasoning that trails the last assistant turn has nothing to attach to: a
+  // thinking-only message at the end of a context is rejected by some
+  // providers, so `pendingThinking` is left to fall away here.
 
   const context: Context = { messages };
   const systemPrompt = systemPrompts.length ? systemPrompts.join('\n\n') : undefined;
@@ -320,8 +392,13 @@ async function normalizeAssistantHistoryMessage(
   model: Model<any>,
   message: any,
   timestamp: number,
+  leadingThinking: ThinkingContent[] = [],
 ): Promise<AssistantMessage> {
   const content: AssistantMessage['content'] = [];
+
+  // Thinking has to come first: Anthropic rejects assistant turns whose
+  // thinking does not lead the block list.
+  content.push(...leadingThinking, ...thinkingFromChatMessage(model, message));
 
   const textBlocks = await normalizeAssistantTextBlocks(message.content);
   content.push(...textBlocks);
@@ -361,6 +438,21 @@ function createAssistantHistoryMessage(
     stopReason: 'stop',
     timestamp,
   };
+}
+
+/**
+ * Rebuilds thinking from a Chat Completions assistant message. `reasoning_details`
+ * carries the provider's continuation data; a bare `reasoning_content` string
+ * only restores the text, which pi-ai downgrades to plain text for providers
+ * that require a signature.
+ */
+function thinkingFromChatMessage(model: Model<any>, message: any): ThinkingContent[] {
+  const restored = thinkingFromReasoningDetails(model, message?.reasoning_details);
+  if (restored.length) return restored;
+
+  const reasoning = message?.reasoning_content;
+  if (typeof reasoning !== 'string' || !reasoning) return [];
+  return [{ type: 'thinking', thinking: reasoning }];
 }
 
 function normalizeToolCall(toolCall: any, id: string): ToolCall {
@@ -522,11 +614,24 @@ async function imageFromUrl(
   };
 }
 
+export function chatCompletionId(message?: AssistantMessage): string {
+  return message?.responseId ?? `chatcmpl-${randomUUID()}`;
+}
+
 export function createChatCompletionResponse(model: Model<any>, message: AssistantMessage) {
   const reasoning = assistantReasoning(message);
+  const reasoningDetails = chatReasoningDetails(model, message);
+  const toolCalls = assistantToolCalls(message).map((toolCall) => ({
+    id: toolCall.id,
+    type: 'function',
+    function: {
+      name: toolCall.name,
+      arguments: JSON.stringify(toolCall.arguments),
+    },
+  }));
 
   return {
-    id: message.responseId ?? `chatcmpl_${randomUUID()}`,
+    id: chatCompletionId(message),
     object: 'chat.completion',
     created: Math.floor(message.timestamp / 1000),
     model: exposedModelId(model),
@@ -536,36 +641,67 @@ export function createChatCompletionResponse(model: Model<any>, message: Assista
         message: {
           role: 'assistant',
           content: assistantText(message) || null,
+          refusal: null,
+          annotations: [],
           ...(reasoning ? { reasoning_content: reasoning } : {}),
-          tool_calls: assistantToolCalls(message).map((toolCall) => ({
-            id: toolCall.id,
-            type: 'function',
-            function: {
-              name: toolCall.name,
-              arguments: JSON.stringify(toolCall.arguments),
-            },
-          })),
+          ...(reasoningDetails ? { reasoning_details: reasoningDetails } : {}),
+          // OpenAI leaves the key out entirely when the model called no tools.
+          ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
         },
+        logprobs: null,
         finish_reason: mapFinishReason(message.stopReason),
       },
     ],
     usage: assistantUsage(message),
+    service_tier: SERVICE_TIER,
+    system_fingerprint: SYSTEM_FINGERPRINT,
   };
 }
 
-export function createResponsesResponse(model: Model<any>, message: AssistantMessage) {
+/**
+ * One streamed chunk. With `stream_options.include_usage` every chunk carries a
+ * `usage` key — null until the extra final chunk — and without it the key is
+ * absent altogether, which is how OpenAI streams.
+ */
+export function createChatCompletionChunk(
+  id: string,
+  created: number,
+  modelId: string,
+  choices: unknown[],
+  options: RenderOptions,
+  usage?: unknown,
+) {
+  return {
+    id,
+    object: 'chat.completion.chunk',
+    created,
+    model: modelId,
+    service_tier: SERVICE_TIER,
+    system_fingerprint: SYSTEM_FINGERPRINT,
+    choices,
+    ...(options.includeUsage ? { usage: usage ?? null } : {}),
+  };
+}
+
+export function createResponsesResponse(
+  model: Model<any>,
+  message: AssistantMessage,
+  options: RenderOptions = {},
+) {
   const text = assistantText(message);
   const toolCalls = assistantToolCalls(message);
   const output: any[] = [];
 
   for (const block of assistantThinking(message)) {
-    if (!block.thinking) continue;
-    output.push({
-      id: `rs_${randomUUID()}`,
-      type: 'reasoning',
-      status: 'completed',
-      summary: [{ type: 'summary_text', text: block.thinking }],
-    });
+    // Each block becomes its own reasoning item, keeping the provider's own item
+    // id and ciphertext so the client can hand it straight back.
+    const item = reasoningItemFromThinking(
+      model,
+      block,
+      `rs_${randomUUID()}`,
+      options.includeEncryptedReasoning === true,
+    );
+    if (item) output.push(item);
   }
 
   if (text) {
@@ -589,25 +725,72 @@ export function createResponsesResponse(model: Model<any>, message: AssistantMes
     });
   }
 
-  return {
+  return createResponsesEnvelope(model, options, {
     id: message.responseId ?? `resp_${randomUUID()}`,
-    object: 'response',
-    created_at: Math.floor(message.timestamp / 1000),
+    createdAt: Math.floor(message.timestamp / 1000),
     status:
       message.stopReason === 'error' || message.stopReason === 'aborted' ? 'failed' : 'completed',
     error: message.errorMessage ? { message: message.errorMessage } : null,
-    incomplete_details: null,
-    model: exposedModelId(model),
     output,
-    output_text: text,
-    parallel_tool_calls: true,
-    tools: [],
     usage: {
       input_tokens: message.usage.input,
-      output_tokens: message.usage.output,
-      total_tokens: message.usage.totalTokens,
       input_tokens_details: { cached_tokens: message.usage.cacheRead },
+      output_tokens: message.usage.output,
       output_tokens_details: { reasoning_tokens: message.usage.reasoning ?? 0 },
+      total_tokens: message.usage.totalTokens,
     },
+  });
+}
+
+/**
+ * The Responses API reports a request's own parameters back on every response,
+ * including the ones the client left at their defaults, and repeats the whole
+ * object on `response.created`, `response.in_progress`, `response.completed`
+ * and `response.failed`.
+ */
+export function createResponsesEnvelope(
+  model: Model<any>,
+  options: RenderOptions,
+  params: {
+    id: string;
+    createdAt: number;
+    status: 'in_progress' | 'completed' | 'failed';
+    error?: { message: string } | null;
+    output?: unknown[];
+    usage?: unknown;
+  },
+) {
+  const body = options.request ?? {};
+  const reasoningEffort = isReasoningEffort(body.reasoning?.effort) ? body.reasoning.effort : null;
+
+  return {
+    id: params.id,
+    object: 'response',
+    created_at: params.createdAt,
+    status: params.status,
+    error: params.error ?? null,
+    incomplete_details: null,
+    instructions: typeof body.instructions === 'string' ? body.instructions : null,
+    max_output_tokens: typeof body.max_output_tokens === 'number' ? body.max_output_tokens : null,
+    model: exposedModelId(model),
+    output: params.output ?? [],
+    parallel_tool_calls: body.parallel_tool_calls !== false,
+    previous_response_id:
+      typeof body.previous_response_id === 'string' ? body.previous_response_id : null,
+    reasoning: {
+      effort: reasoningEffort,
+      summary: typeof body.reasoning?.summary === 'string' ? body.reasoning.summary : null,
+    },
+    service_tier: SERVICE_TIER,
+    store: body.store !== false,
+    temperature: typeof body.temperature === 'number' ? body.temperature : 1,
+    text: body.text ?? { format: { type: 'text' } },
+    tool_choice: body.tool_choice ?? 'auto',
+    tools: Array.isArray(body.tools) ? body.tools : [],
+    top_p: typeof body.top_p === 'number' ? body.top_p : 1,
+    truncation: typeof body.truncation === 'string' ? body.truncation : 'disabled',
+    usage: params.usage ?? null,
+    user: typeof body.user === 'string' ? body.user : null,
+    metadata: body.metadata ?? {},
   };
 }

@@ -108,7 +108,6 @@ test('Responses API emits a native reasoning item alongside assistant text', () 
     { type: 'summary_text', text: 'Compare both options.' },
   ]);
   assert.equal(response.output[1].content[0].text, 'Option B is better.');
-  assert.equal(response.output_text, 'Option B is better.');
   assert.equal(response.usage.output_tokens_details.reasoning_tokens, 4);
 });
 

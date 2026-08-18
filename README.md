@@ -34,6 +34,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 - streaming SSE responses
 - image input
 - tool calls
+- encrypted reasoning content for multi-turn reasoning continuity
 - automatic OAuth credential refresh
 - model groups with automatic fallback
 - shared API key protection via `LLM_OAUTH_API_KEY`

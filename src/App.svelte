@@ -118,6 +118,8 @@
       model: settings.model,
       messages: [{ role: 'user', content: settings.prompt }],
       ...generationOptions,
+      // Chat Completions only reports token usage on a stream when it is asked to.
+      ...(settings.stream ? { stream_options: { include_usage: true } } : {}),
       ...(settings.includeReasoning ? { reasoning_effort: settings.reasoningEffort } : {}),
     };
   }
@@ -379,7 +381,9 @@
 
     if (Array.isArray(value.output)) {
       return value.output
-        .filter((item): item is Record<string, unknown> => isRecord(item) && item.type === 'reasoning')
+        .filter(
+          (item): item is Record<string, unknown> => isRecord(item) && item.type === 'reasoning',
+        )
         .flatMap((item) => (Array.isArray(item.summary) ? item.summary : []))
         .map((part) => (isRecord(part) && typeof part.text === 'string' ? part.text : ''))
         .join('');

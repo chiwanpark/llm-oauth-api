@@ -29,17 +29,24 @@ import {
   assistantUsage,
   buildChatContext,
   buildChatPiOptions,
+  buildRenderOptions,
   buildResponsesContext,
   buildResponsesPiOptions,
+  chatCompletionId,
+  chatReasoningDetails,
+  createChatCompletionChunk,
   createChatCompletionResponse,
   createOpenAIError,
   createOpenAIModelsResponse,
+  createResponsesEnvelope,
   createResponsesResponse,
   exposedModelId,
   isReasoningEffort,
   mapFinishReason,
   REASONING_EFFORTS,
+  type RenderOptions,
 } from './openai-compat.js';
+import { reasoningItemFromThinking } from './reasoning.js';
 import {
   describeGroup,
   findGroup,
@@ -255,7 +262,7 @@ type EndpointAdapter = {
   label: string;
   buildContext(model: Model<any>, body: any): Promise<any>;
   buildOptions(body: any, signal: AbortSignal): any;
-  render(model: Model<any>, message: AssistantMessage): unknown;
+  render(model: Model<any>, message: AssistantMessage, render: RenderOptions): unknown;
   stream(
     models: MutableModels,
     model: Model<any>,
@@ -264,6 +271,7 @@ type EndpointAdapter = {
     reply: FastifyReply,
     logger: FastifyBaseLogger,
     allowFailover: boolean,
+    render: RenderOptions,
   ): Promise<void>;
 };
 
@@ -304,6 +312,21 @@ async function handleChatCompletions(
     return;
   }
 
+  if (body?.stream_options !== undefined && body?.stream !== true) {
+    reply
+      .code(400)
+      .send(
+        createOpenAIError(
+          '`stream_options` can only be used when `stream` is true',
+          'invalid_request_error',
+          'invalid_value',
+        ),
+      );
+    return;
+  }
+
+  if (!validateInclude(body, reply)) return;
+
   await runCompletion(models, groups, request, reply, chatAdapter);
 }
 
@@ -328,7 +351,34 @@ async function handleResponses(
     return;
   }
 
+  if (!validateInclude(body, reply)) return;
+
   await runCompletion(models, groups, request, reply, responsesAdapter);
+}
+
+/**
+ * Only the shape of `include` is checked. Unknown entries are ignored rather
+ * than rejected, so clients can keep asking for fields this proxy does not
+ * produce yet.
+ */
+function validateInclude(body: any, reply: FastifyReply): boolean {
+  const include = body?.include;
+  if (include === undefined || include === null) return true;
+
+  if (!Array.isArray(include) || include.some((entry) => typeof entry !== 'string')) {
+    reply
+      .code(400)
+      .send(
+        createOpenAIError(
+          '`include` must be an array of strings',
+          'invalid_request_error',
+          'invalid_value',
+        ),
+      );
+    return false;
+  }
+
+  return true;
 }
 
 /**
@@ -392,9 +442,19 @@ export async function runCompletion(
 
       const context = await adapter.buildContext(model, body);
       const options = adapter.buildOptions(body, signal);
+      const render = buildRenderOptions(body);
 
       if (body.stream) {
-        await adapter.stream(models, model, context, options, reply, request.log, allowFailover);
+        await adapter.stream(
+          models,
+          model,
+          context,
+          options,
+          reply,
+          request.log,
+          allowFailover,
+          render,
+        );
         return;
       }
 
@@ -417,7 +477,7 @@ export async function runCompletion(
         continue;
       }
 
-      reply.send(adapter.render(model, message));
+      reply.send(adapter.render(model, message, render));
       return;
     } catch (error) {
       if (reply.raw.headersSent) {
@@ -593,45 +653,41 @@ export async function streamChatCompletions(
   reply: FastifyReply,
   logger: FastifyBaseLogger,
   allowFailover = false,
+  render: RenderOptions = {},
 ) {
   const stream = await beginStream(models, model, context, options, allowFailover);
 
   prepareSse(reply);
 
-  const id = `chatcmpl_${randomUUID()}`;
+  const id = chatCompletionId();
   const created = Math.floor(Date.now() / 1000);
   const modelId = exposedModelId(model);
   const toolCallIndexes = new Map<number, number>();
   let nextToolCallIndex = 0;
 
-  writeSseData(reply, {
-    id,
-    object: 'chat.completion.chunk',
-    created,
-    model: modelId,
-    choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
-  });
+  const writeChunk = (delta: unknown, finishReason: string | null = null) => {
+    writeSseData(
+      reply,
+      createChatCompletionChunk(
+        id,
+        created,
+        modelId,
+        [{ index: 0, delta, logprobs: null, finish_reason: finishReason }],
+        render,
+      ),
+    );
+  };
+
+  writeChunk({ role: 'assistant', content: '', refusal: null });
 
   for await (const event of stream) {
     if (event.type === 'thinking_delta') {
-      writeSseData(reply, {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: modelId,
-        choices: [{ index: 0, delta: { reasoning_content: event.delta }, finish_reason: null }],
-      });
+      writeChunk({ reasoning_content: event.delta });
       continue;
     }
 
     if (event.type === 'text_delta') {
-      writeSseData(reply, {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: modelId,
-        choices: [{ index: 0, delta: { content: event.delta }, finish_reason: null }],
-      });
+      writeChunk({ content: event.delta });
       continue;
     }
 
@@ -640,25 +696,13 @@ export async function streamChatCompletions(
       if (partial?.type !== 'toolCall') continue;
       const toolIndex = nextToolCallIndex++;
       toolCallIndexes.set(event.contentIndex, toolIndex);
-      writeSseData(reply, {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: modelId,
-        choices: [
+      writeChunk({
+        tool_calls: [
           {
-            index: 0,
-            delta: {
-              tool_calls: [
-                {
-                  index: toolIndex,
-                  id: partial.id,
-                  type: 'function',
-                  function: { name: partial.name, arguments: '' },
-                },
-              ],
-            },
-            finish_reason: null,
+            index: toolIndex,
+            id: partial.id,
+            type: 'function',
+            function: { name: partial.name, arguments: '' },
           },
         ],
       });
@@ -668,36 +712,36 @@ export async function streamChatCompletions(
     if (event.type === 'toolcall_delta') {
       const toolIndex = toolCallIndexes.get(event.contentIndex) ?? nextToolCallIndex++;
       toolCallIndexes.set(event.contentIndex, toolIndex);
-      writeSseData(reply, {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: modelId,
-        choices: [
-          {
-            index: 0,
-            delta: {
-              tool_calls: [{ index: toolIndex, function: { arguments: event.delta } }],
-            },
-            finish_reason: null,
-          },
-        ],
+      writeChunk({
+        tool_calls: [{ index: toolIndex, function: { arguments: event.delta } }],
       });
       continue;
     }
 
     if (event.type === 'done') {
       logModelResponse(logger, model, event.message);
-      writeSseData(reply, {
-        id,
-        object: 'chat.completion.chunk',
-        created,
-        model: modelId,
-        choices: [
-          { index: 0, delta: {}, finish_reason: mapFinishReason(event.message.stopReason) },
-        ],
-        usage: assistantUsage(event.message),
-      });
+      // Providers attach continuation data as each reasoning block closes, so
+      // the complete set is only known once the message is finished.
+      const reasoningDetails = chatReasoningDetails(model, event.message);
+      writeChunk(
+        reasoningDetails ? { reasoning_details: reasoningDetails } : {},
+        mapFinishReason(event.message.stopReason),
+      );
+      // Usage rides on an extra chunk that carries no choices, and only when the
+      // client asked for it through `stream_options`.
+      if (render.includeUsage) {
+        writeSseData(
+          reply,
+          createChatCompletionChunk(
+            id,
+            created,
+            modelId,
+            [],
+            render,
+            assistantUsage(event.message),
+          ),
+        );
+      }
       writeSseDone(reply);
       return;
     }
@@ -724,13 +768,13 @@ export async function streamResponses(
   reply: FastifyReply,
   logger: FastifyBaseLogger,
   allowFailover = false,
+  render: RenderOptions = {},
 ) {
   const stream = await beginStream(models, model, context, options, allowFailover);
 
   prepareSse(reply);
 
   const responseId = `resp_${randomUUID()}`;
-  const modelId = exposedModelId(model);
   const createdAt = Math.floor(Date.now() / 1000);
 
   const reasoningItems = new Map<number, { outputIndex: number; itemId: string }>();
@@ -742,26 +786,16 @@ export async function streamResponses(
   const toolItemIds = new Map<number, string>();
   let nextOutputIndex = 0;
 
-  writeSseEvent(reply, 'response.created', {
-    type: 'response.created',
-    response: {
+  const emit = sseEmitter(reply);
+  const inProgress = () =>
+    createResponsesEnvelope(model, render, {
       id: responseId,
-      object: 'response',
-      created_at: createdAt,
-      model: modelId,
+      createdAt,
       status: 'in_progress',
-    },
-  });
-  writeSseEvent(reply, 'response.in_progress', {
-    type: 'response.in_progress',
-    response: {
-      id: responseId,
-      object: 'response',
-      created_at: createdAt,
-      model: modelId,
-      status: 'in_progress',
-    },
-  });
+    });
+
+  emit('response.created', { response: inProgress() });
+  emit('response.in_progress', { response: inProgress() });
 
   for await (const event of stream) {
     if (event.type === 'thinking_start') {
@@ -770,9 +804,7 @@ export async function streamResponses(
         outputIndex: nextOutputIndex++,
       };
       reasoningItems.set(event.contentIndex, item);
-      writeSseEvent(reply, 'response.output_item.added', {
-        type: 'response.output_item.added',
-        response_id: responseId,
+      emit('response.output_item.added', {
         output_index: item.outputIndex,
         item: {
           id: item.itemId,
@@ -781,11 +813,9 @@ export async function streamResponses(
           summary: [],
         },
       });
-      writeSseEvent(reply, 'response.reasoning_summary_part.added', {
-        type: 'response.reasoning_summary_part.added',
-        response_id: responseId,
-        output_index: item.outputIndex,
+      emit('response.reasoning_summary_part.added', {
         item_id: item.itemId,
+        output_index: item.outputIndex,
         summary_index: 0,
         part: { type: 'summary_text', text: '' },
       });
@@ -795,11 +825,9 @@ export async function streamResponses(
     if (event.type === 'thinking_delta') {
       const item = reasoningItems.get(event.contentIndex);
       if (!item) continue;
-      writeSseEvent(reply, 'response.reasoning_summary_text.delta', {
-        type: 'response.reasoning_summary_text.delta',
-        response_id: responseId,
-        output_index: item.outputIndex,
+      emit('response.reasoning_summary_text.delta', {
         item_id: item.itemId,
+        output_index: item.outputIndex,
         summary_index: 0,
         delta: event.delta,
       });
@@ -809,31 +837,40 @@ export async function streamResponses(
     if (event.type === 'thinking_end') {
       const item = reasoningItems.get(event.contentIndex);
       if (!item) continue;
-      writeSseEvent(reply, 'response.reasoning_summary_text.done', {
-        type: 'response.reasoning_summary_text.done',
-        response_id: responseId,
-        output_index: item.outputIndex,
+      // The provider only attaches its reasoning item — id and ciphertext
+      // included — as the block closes, so the finished item is the first place
+      // it can be reported. Its id replaces the placeholder used by the summary
+      // events above, which keeps the item identical to the one repeated in
+      // `response.completed`.
+      const block = event.partial?.content?.[event.contentIndex];
+      const finished =
+        block?.type === 'thinking'
+          ? reasoningItemFromThinking(
+              model,
+              block,
+              item.itemId,
+              render.includeEncryptedReasoning === true,
+            )
+          : undefined;
+      emit('response.reasoning_summary_text.done', {
         item_id: item.itemId,
+        output_index: item.outputIndex,
         summary_index: 0,
         text: event.content,
       });
-      writeSseEvent(reply, 'response.reasoning_summary_part.done', {
-        type: 'response.reasoning_summary_part.done',
-        response_id: responseId,
-        output_index: item.outputIndex,
+      emit('response.reasoning_summary_part.done', {
         item_id: item.itemId,
+        output_index: item.outputIndex,
         summary_index: 0,
         part: { type: 'summary_text', text: event.content },
       });
-      writeSseEvent(reply, 'response.output_item.done', {
-        type: 'response.output_item.done',
-        response_id: responseId,
+      emit('response.output_item.done', {
         output_index: item.outputIndex,
-        item: {
+        item: finished ?? {
           id: item.itemId,
           type: 'reasoning',
           status: 'completed',
-          summary: [{ type: 'summary_text', text: event.content }],
+          summary: event.content ? [{ type: 'summary_text', text: event.content }] : [],
         },
       });
       reasoningItems.delete(event.contentIndex);
@@ -843,9 +880,7 @@ export async function streamResponses(
     if (event.type === 'text_start') {
       assistantItemId ??= `msg_${randomUUID()}`;
       assistantOutputIndex ??= nextOutputIndex++;
-      writeSseEvent(reply, 'response.output_item.added', {
-        type: 'response.output_item.added',
-        response_id: responseId,
+      emit('response.output_item.added', {
         output_index: assistantOutputIndex,
         item: {
           id: assistantItemId,
@@ -855,24 +890,20 @@ export async function streamResponses(
           content: [],
         },
       });
-      writeSseEvent(reply, 'response.content_part.added', {
-        type: 'response.content_part.added',
-        response_id: responseId,
-        output_index: assistantOutputIndex,
+      emit('response.content_part.added', {
         item_id: assistantItemId,
+        output_index: assistantOutputIndex,
         content_index: assistantContentIndex,
-        part: { type: 'output_text', text: '' },
+        part: { type: 'output_text', text: '', annotations: [] },
       });
       continue;
     }
 
     if (event.type === 'text_delta' && assistantItemId != null && assistantOutputIndex != null) {
       assistantText += event.delta;
-      writeSseEvent(reply, 'response.output_text.delta', {
-        type: 'response.output_text.delta',
-        response_id: responseId,
-        output_index: assistantOutputIndex,
+      emit('response.output_text.delta', {
         item_id: assistantItemId,
+        output_index: assistantOutputIndex,
         content_index: assistantContentIndex,
         delta: event.delta,
       });
@@ -880,21 +911,17 @@ export async function streamResponses(
     }
 
     if (event.type === 'text_end' && assistantItemId != null && assistantOutputIndex != null) {
-      writeSseEvent(reply, 'response.output_text.done', {
-        type: 'response.output_text.done',
-        response_id: responseId,
-        output_index: assistantOutputIndex,
+      emit('response.output_text.done', {
         item_id: assistantItemId,
+        output_index: assistantOutputIndex,
         content_index: assistantContentIndex,
         text: event.content,
       });
-      writeSseEvent(reply, 'response.content_part.done', {
-        type: 'response.content_part.done',
-        response_id: responseId,
-        output_index: assistantOutputIndex,
+      emit('response.content_part.done', {
         item_id: assistantItemId,
+        output_index: assistantOutputIndex,
         content_index: assistantContentIndex,
-        part: { type: 'output_text', text: event.content },
+        part: { type: 'output_text', text: event.content, annotations: [] },
       });
       assistantContentIndex += 1;
       continue;
@@ -907,9 +934,7 @@ export async function streamResponses(
       const itemId = `fc_${partial.id}`;
       toolOutputIndexes.set(event.contentIndex, outputIndex);
       toolItemIds.set(event.contentIndex, itemId);
-      writeSseEvent(reply, 'response.output_item.added', {
-        type: 'response.output_item.added',
-        response_id: responseId,
+      emit('response.output_item.added', {
         output_index: outputIndex,
         item: {
           id: itemId,
@@ -927,11 +952,9 @@ export async function streamResponses(
       const outputIndex = toolOutputIndexes.get(event.contentIndex);
       const itemId = toolItemIds.get(event.contentIndex);
       if (outputIndex == null || itemId == null) continue;
-      writeSseEvent(reply, 'response.function_call_arguments.delta', {
-        type: 'response.function_call_arguments.delta',
-        response_id: responseId,
-        output_index: outputIndex,
+      emit('response.function_call_arguments.delta', {
         item_id: itemId,
+        output_index: outputIndex,
         delta: event.delta,
       });
       continue;
@@ -941,16 +964,12 @@ export async function streamResponses(
       const outputIndex = toolOutputIndexes.get(event.contentIndex);
       const itemId = toolItemIds.get(event.contentIndex);
       if (outputIndex == null || itemId == null) continue;
-      writeSseEvent(reply, 'response.function_call_arguments.done', {
-        type: 'response.function_call_arguments.done',
-        response_id: responseId,
-        output_index: outputIndex,
+      emit('response.function_call_arguments.done', {
         item_id: itemId,
+        output_index: outputIndex,
         arguments: JSON.stringify(event.toolCall.arguments),
       });
-      writeSseEvent(reply, 'response.output_item.done', {
-        type: 'response.output_item.done',
-        response_id: responseId,
+      emit('response.output_item.done', {
         output_index: outputIndex,
         item: {
           id: itemId,
@@ -967,9 +986,7 @@ export async function streamResponses(
     if (event.type === 'done') {
       logModelResponse(logger, model, event.message);
       if (assistantItemId != null && assistantOutputIndex != null) {
-        writeSseEvent(reply, 'response.output_item.done', {
-          type: 'response.output_item.done',
-          response_id: responseId,
+        emit('response.output_item.done', {
           output_index: assistantOutputIndex,
           item: {
             id: assistantItemId,
@@ -982,10 +999,8 @@ export async function streamResponses(
           },
         });
       }
-      const response = createResponsesResponse(model, { ...event.message, responseId });
-      writeSseEvent(reply, 'response.completed', {
-        type: 'response.completed',
-        response,
+      emit('response.completed', {
+        response: createResponsesResponse(model, { ...event.message, responseId }, render),
       });
       reply.raw.end();
       return;
@@ -993,16 +1008,13 @@ export async function streamResponses(
 
     if (event.type === 'error') {
       logModelResponse(logger, model, event.error);
-      writeSseEvent(reply, 'response.failed', {
-        type: 'response.failed',
-        response: {
+      emit('response.failed', {
+        response: createResponsesEnvelope(model, render, {
           id: responseId,
-          object: 'response',
-          created_at: createdAt,
-          model: modelId,
+          createdAt,
           status: 'failed',
           error: { message: event.error.errorMessage ?? 'Upstream model error' },
-        },
+        }),
       });
       reply.raw.end();
       return;
@@ -1052,6 +1064,17 @@ function writeSseData(reply: FastifyReply, payload: unknown) {
 function writeSseEvent(reply: FastifyReply, event: string, payload: unknown) {
   reply.raw.write(`event: ${event}\n`);
   reply.raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+/**
+ * Responses events are numbered so a client can tell whether it missed one, and
+ * each payload repeats its own event name.
+ */
+function sseEmitter(reply: FastifyReply) {
+  let sequenceNumber = 0;
+  return (event: string, payload: Record<string, unknown>) => {
+    writeSseEvent(reply, event, { type: event, ...payload, sequence_number: sequenceNumber++ });
+  };
 }
 
 function writeSseDone(reply: FastifyReply) {
