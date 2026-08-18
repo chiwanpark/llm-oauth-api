@@ -37,7 +37,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 - tool calls
 - encrypted reasoning content for multi-turn reasoning continuity
 - automatic OAuth credential refresh
-- model groups with automatic fallback
+- model groups with automatic fallback and cooldown for failing models
 - shared API key protection via `LLM_OAUTH_API_KEY`
 
 ## Install
@@ -156,23 +156,17 @@ export LLM_OAUTH_GROUP_ALL=fast,google:gemini-2.5-pro
 Here `all` tries `github-copilot:gpt-5-mini`, then `openai-codex:gpt-5.4-mini`, then
 `google:gemini-2.5-pro`, and `fast` remains requestable on its own.
 
-When every member fails, the response reports each attempt:
+### Cooldown for failing models
 
-```json
-{
-  "error": {
-    "message": "All models in group \"free\" failed (github-copilot:gpt-5.4-mini: rate limited; openai-codex:gpt-5-mini: upstream 500)",
-    "type": "api_error"
-  }
-}
+Rate limits, exhausted quotas, and provider outages last longer than one request, so a member that
+fails is remembered: for the next 5 minutes the group passes over it and starts at the following
+member instead of paying for the same failure again. Responding successfully clears the record, and
+so does the window expiring. Change or disable the window with seconds:
+
+```bash
+pnpm loa serve --auth-file ./auth.json --model-cooldown 60
+pnpm loa serve --auth-file ./auth.json --model-cooldown 0   # always try every member
 ```
-
-Open `http://localhost:3000/` to use the browser-based API playground. Enter the shared API
-key, load a configured model, and test either `/chat/completions` or `/responses`. The key is
-kept in the current browser tab and is not persisted.
-
-For frontend development, run `pnpm dev:client` after starting the API server. Vite serves the
-client on port 5173 and proxies `/v1` requests to port 3000.
 
 ## Calling the API
 

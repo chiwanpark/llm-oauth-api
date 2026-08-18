@@ -9,6 +9,7 @@ import {
   parseRefreshSeconds,
 } from './oauth-refresh.js';
 import { GROUP_ENV_PREFIX, parseModelGroups } from './groups.js';
+import { DEFAULT_MODEL_COOLDOWN_MS, parseCooldownSeconds } from './model-cooldown.js';
 import {
   createSupportedProvider,
   getSupportedProviderIds,
@@ -49,13 +50,22 @@ program
       ),
   )
   .option('--no-oauth-auto-refresh', 'Disable automatic OAuth credential refresh')
+  .addOption(
+    new Option(
+      '--model-cooldown <seconds>',
+      'How long a group skips a model that failed to respond (0 disables)',
+    )
+      .argParser((value) => parseCooldownSeconds(value, '--model-cooldown'))
+      .default(DEFAULT_MODEL_COOLDOWN_MS, String(DEFAULT_MODEL_COOLDOWN_MS / 1000)),
+  )
   .addHelpText(
     'after',
     '\nModel groups:\n' +
       `  Set ${GROUP_ENV_PREFIX}<NAME>=<provider>:<model>,... to expose a fallback model.\n` +
       `  e.g. ${GROUP_ENV_PREFIX}FREE=github-copilot:gpt-5.4-mini,openai-codex:gpt-5-mini\n` +
       '  makes the model "free" try github-copilot first and fall back to openai-codex.\n' +
-      '  An entry without a ":" names another group and is flattened into its parent.',
+      '  An entry without a ":" names another group and is flattened into its parent.\n' +
+      '  A member that fails is skipped for --model-cooldown seconds afterwards.',
   )
   .action(async (options) => {
     const apiKey = process.env.LLM_OAUTH_API_KEY;
@@ -73,6 +83,7 @@ program
       apiKey,
       port: Number(options.port),
       host: options.host,
+      modelCooldownMs: options.modelCooldown,
       oauthAutoRefresh: options.oauthAutoRefresh,
       oauthRefreshIntervalMs: options.oauthRefreshInterval,
       oauthRefreshBeforeExpiryMs: options.oauthRefreshBeforeExpiry,

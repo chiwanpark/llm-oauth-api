@@ -21,6 +21,12 @@ import Fastify, {
 
 import { JsonCredentialStore } from './credential-store.js';
 import {
+  createModelCooldown,
+  DEFAULT_MODEL_COOLDOWN_MS,
+  describeSkip,
+  type ModelCooldown,
+} from './model-cooldown.js';
+import {
   DEFAULT_OAUTH_REFRESH_BEFORE_EXPIRY_MS,
   DEFAULT_OAUTH_REFRESH_INTERVAL_MS,
   startOAuthRefreshScheduler,
@@ -63,6 +69,8 @@ export type ServerOptions = {
   apiKey: string;
   port: number;
   host: string;
+  /** How long a model that failed is passed over; 0 disables skipping. */
+  modelCooldownMs?: number;
   oauthAutoRefresh?: boolean;
   oauthRefreshIntervalMs?: number;
   oauthRefreshBeforeExpiryMs?: number;
@@ -107,8 +115,14 @@ export async function startServer(options: ServerOptions): Promise<void> {
   });
 
   const groups = options.groups ?? [];
+  const cooldown = createModelCooldown({
+    cooldownMs: options.modelCooldownMs ?? DEFAULT_MODEL_COOLDOWN_MS,
+  });
   for (const group of groups) {
-    app.log.info({ group: group.name, members: describeGroup(group) }, 'Model group registered');
+    app.log.info(
+      { group: group.name, members: describeGroup(group), cooldownMs: cooldown.cooldownMs },
+      'Model group registered',
+    );
   }
 
   app.get('/v1/models', async (_request, reply) => {
@@ -119,11 +133,11 @@ export async function startServer(options: ServerOptions): Promise<void> {
   });
 
   app.post('/v1/chat/completions', async (request, reply) => {
-    await handleChatCompletions(models, groups, request, reply);
+    await handleChatCompletions(models, groups, request, reply, cooldown);
   });
 
   app.post('/v1/responses', async (request, reply) => {
-    await handleResponses(models, groups, request, reply);
+    await handleResponses(models, groups, request, reply, cooldown);
   });
 
   await registerClient(app);
@@ -252,9 +266,24 @@ class UpstreamAttemptError extends Error {
 }
 
 type AttemptFailure = {
-  kind: 'unconfigured' | 'upstream' | 'exception';
+  kind: 'unconfigured' | 'upstream' | 'exception' | 'cooling';
   model: Model<any>;
   message: string;
+};
+
+/** Used when no store is supplied, so every candidate is always attempted. */
+const NO_COOLDOWN = createModelCooldown({ cooldownMs: 0 });
+
+/**
+ * How a committed stream ended.
+ *
+ * A stream that has already reached the client reports its own failure inline
+ * instead of throwing, so the outcome has to be handed back explicitly for the
+ * caller to be able to tell a working model from a broken one.
+ */
+export type StreamOutcome = {
+  /** The failure the provider reported, absent when the stream completed. */
+  error?: AssistantMessage;
 };
 
 /** Per-endpoint wiring; the fallback logic itself is shared. */
@@ -272,7 +301,7 @@ type EndpointAdapter = {
     logger: FastifyBaseLogger,
     allowFailover: boolean,
     render: RenderOptions,
-  ): Promise<void>;
+  ): Promise<StreamOutcome>;
 };
 
 export const chatAdapter: EndpointAdapter = {
@@ -296,6 +325,7 @@ async function handleChatCompletions(
   groups: readonly ModelGroup[],
   request: FastifyRequest,
   reply: FastifyReply,
+  cooldown?: ModelCooldown,
 ) {
   const body = request.body as any;
 
@@ -327,7 +357,7 @@ async function handleChatCompletions(
 
   if (!validateInclude(body, reply)) return;
 
-  await runCompletion(models, groups, request, reply, chatAdapter);
+  await runCompletion(models, groups, request, reply, chatAdapter, cooldown);
 }
 
 async function handleResponses(
@@ -335,6 +365,7 @@ async function handleResponses(
   groups: readonly ModelGroup[],
   request: FastifyRequest,
   reply: FastifyReply,
+  cooldown?: ModelCooldown,
 ) {
   const body = request.body as any;
 
@@ -353,7 +384,7 @@ async function handleResponses(
 
   if (!validateInclude(body, reply)) return;
 
-  await runCompletion(models, groups, request, reply, responsesAdapter);
+  await runCompletion(models, groups, request, reply, responsesAdapter, cooldown);
 }
 
 /**
@@ -389,6 +420,11 @@ function validateInclude(body: any, reply: FastifyReply): boolean {
  * streaming response is committed to a provider the client already holds
  * partial output, so a later failure is reported on that stream instead of
  * being retried elsewhere.
+ *
+ * A model that failed is remembered for the length of the cooldown window, so
+ * later requests start at the next member instead of paying for the same
+ * failure again. The failure is still reported, because a skipped member is
+ * part of the explanation when the whole group comes up empty.
  */
 export async function runCompletion(
   models: MutableModels,
@@ -396,6 +432,7 @@ export async function runCompletion(
   request: FastifyRequest,
   reply: FastifyReply,
   adapter: EndpointAdapter,
+  cooldown: ModelCooldown = NO_COOLDOWN,
 ): Promise<void> {
   const body = request.body as any;
   const requestedModel = typeof body?.model === 'string' ? body.model : undefined;
@@ -416,24 +453,48 @@ export async function runCompletion(
     return;
   }
 
-  const allowFailover = candidates.length > 1;
-  const signal = createRequestSignal(request, reply);
-  const failures: AttemptFailure[] = [];
+  const { attempts, skipped } = cooldown.select(candidates);
+  if (skipped.length) {
+    request.log.info(
+      {
+        requestedModel,
+        skipped: skipped.map((skip) => ({
+          model: exposedModelId(skip.model),
+          reason: skip.reason,
+          remainingMs: skip.remainingMs,
+        })),
+      },
+      `${adapter.label} skipping models that recently failed`,
+    );
+  }
 
-  for (const [index, model] of candidates.entries()) {
+  const allowFailover = attempts.length > 1;
+  const signal = createRequestSignal(request, reply);
+  // Skipped members are failures the group already knows about, so they belong
+  // in the report if nothing else works out either.
+  const failures: AttemptFailure[] = skipped.map((skip) => ({
+    kind: 'cooling',
+    model: skip.model,
+    message: describeSkip(skip),
+  }));
+
+  for (const [index, model] of attempts.entries()) {
     if (signal.aborted) return;
 
     const modelId = exposedModelId(model);
     try {
       const auth = await models.getAuth(model);
       if (!auth) {
+        // Missing credentials are a configuration gap rather than a model that
+        // stopped responding, and cost nothing to detect, so they never start a
+        // cooldown.
         failures.push({ kind: 'unconfigured', model, message: 'not configured' });
         logFallback(
           request.log,
           adapter,
           requestedModel,
           modelId,
-          candidates,
+          attempts,
           index,
           'not configured',
         );
@@ -445,7 +506,7 @@ export async function runCompletion(
       const render = buildRenderOptions(body);
 
       if (body.stream) {
-        await adapter.stream(
+        const outcome = await adapter.stream(
           models,
           model,
           context,
@@ -455,6 +516,11 @@ export async function runCompletion(
           allowFailover,
           render,
         );
+        // A committed stream reports its failure on the stream itself, so the
+        // model is scored from the outcome rather than from how this call
+        // returned. Without failover — a plain model request, or the last
+        // member of a group — this is the only place that failure is visible.
+        recordStreamOutcome(cooldown, model, outcome);
         return;
       }
 
@@ -472,17 +538,25 @@ export async function runCompletion(
 
       if (message.stopReason === 'error') {
         const detail = message.errorMessage ?? 'Upstream model error';
+        cooldown.record(model, detail);
         failures.push({ kind: 'upstream', model, message: detail });
-        logFallback(request.log, adapter, requestedModel, modelId, candidates, index, detail);
+        logFallback(request.log, adapter, requestedModel, modelId, attempts, index, detail);
         continue;
       }
 
+      cooldown.clear(model);
       reply.send(adapter.render(model, message, render));
       return;
     } catch (error) {
+      const detail = error instanceof UpstreamAttemptError ? error.message : errorMessage(error);
+      // A client that disappeared mid-request is not the model's failure, and
+      // every provider would look broken by the end of a cancelled stream.
+      if (!signal.aborted) cooldown.record(model, detail);
+
       if (reply.raw.headersSent) {
         // The stream is already committed to this provider; failing over now
-        // would splice two providers' output into one response.
+        // would splice two providers' output into one response. The failure is
+        // still the model's, so it counts against it for later requests.
         request.log.error(
           { err: error, model: modelId },
           `${adapter.label} failed after the response was committed`,
@@ -491,14 +565,38 @@ export async function runCompletion(
         return;
       }
 
-      const detail = error instanceof UpstreamAttemptError ? error.message : errorMessage(error);
       failures.push({ kind: 'exception', model, message: detail });
       request.log.error({ err: error, model: modelId }, `${adapter.label} failed`);
-      logFallback(request.log, adapter, requestedModel, modelId, candidates, index, detail);
+      logFallback(request.log, adapter, requestedModel, modelId, attempts, index, detail);
     }
   }
 
   sendExhausted(reply, requestedModel, group !== undefined, failures);
+}
+
+/**
+ * Scores a model from how its stream ended.
+ *
+ * Streaming and non-streaming failures are treated the same way: an upstream
+ * error counts against the model even when part of the answer already reached
+ * the client, because the next request has no reason to expect better.
+ */
+function recordStreamOutcome(
+  cooldown: ModelCooldown,
+  model: Model<any>,
+  outcome: StreamOutcome,
+): void {
+  const failure = outcome.error;
+  if (!failure) {
+    cooldown.clear(model);
+    return;
+  }
+
+  // The provider reports a client disconnect the same way it reports its own
+  // faults; only the latter says anything about the model's health.
+  if (failure.stopReason === 'aborted') return;
+
+  cooldown.record(model, failure.errorMessage ?? 'Upstream model error');
 }
 
 function logFallback(
@@ -530,7 +628,9 @@ function sendExhausted(
   isGroup: boolean,
   failures: readonly AttemptFailure[],
 ): void {
-  // Plain model requests keep their original, non-aggregated responses.
+  // Plain model requests keep their original, non-aggregated responses. They
+  // resolve to a single candidate, which is never skipped, so the first failure
+  // is always a real attempt.
   if (!isGroup) {
     const failure = failures[0]!;
     if (failure.kind === 'unconfigured') {
@@ -555,7 +655,10 @@ function sendExhausted(
     .map((failure) => `${exposedModelId(failure.model)}: ${failure.message}`)
     .join('; ');
 
-  if (failures.every((failure) => failure.kind === 'unconfigured')) {
+  // Skipped members carry no information about configuration, so the shape of
+  // the error is decided by the members that were actually tried.
+  const attempted = failures.filter((failure) => failure.kind !== 'cooling');
+  if (attempted.length && attempted.every((failure) => failure.kind === 'unconfigured')) {
     reply
       .code(400)
       .send(
@@ -654,7 +757,7 @@ export async function streamChatCompletions(
   logger: FastifyBaseLogger,
   allowFailover = false,
   render: RenderOptions = {},
-) {
+): Promise<StreamOutcome> {
   const stream = await beginStream(models, model, context, options, allowFailover);
 
   prepareSse(reply);
@@ -743,7 +846,7 @@ export async function streamChatCompletions(
         );
       }
       writeSseDone(reply);
-      return;
+      return {};
     }
 
     if (event.type === 'error') {
@@ -753,11 +856,12 @@ export async function streamChatCompletions(
         createOpenAIError(event.error.errorMessage ?? 'Upstream model error', 'api_error'),
       );
       writeSseDone(reply);
-      return;
+      return { error: event.error };
     }
   }
 
   writeSseDone(reply);
+  return {};
 }
 
 export async function streamResponses(
@@ -769,7 +873,7 @@ export async function streamResponses(
   logger: FastifyBaseLogger,
   allowFailover = false,
   render: RenderOptions = {},
-) {
+): Promise<StreamOutcome> {
   const stream = await beginStream(models, model, context, options, allowFailover);
 
   prepareSse(reply);
@@ -1003,7 +1107,7 @@ export async function streamResponses(
         response: createResponsesResponse(model, { ...event.message, responseId }, render),
       });
       reply.raw.end();
-      return;
+      return {};
     }
 
     if (event.type === 'error') {
@@ -1017,11 +1121,12 @@ export async function streamResponses(
         }),
       });
       reply.raw.end();
-      return;
+      return { error: event.error };
     }
   }
 
   reply.raw.end();
+  return {};
 }
 
 function logModelResponse(
