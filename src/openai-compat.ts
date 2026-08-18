@@ -365,27 +365,50 @@ export function buildResponsesPiOptions(body: any, signal?: AbortSignal) {
   };
 }
 
+/**
+ * Chat completions nests a function tool under `function`, while the responses
+ * API spells the same tool flat on the item itself. Both arrive here, so the
+ * definition is read from whichever place carries it.
+ */
+function toolDefinition(tool: any): any {
+  return tool?.function ?? tool;
+}
+
+/**
+ * `tool_choice` has the same split: `{type:'function',function:{name}}` for chat
+ * completions and `{type:'function',name}` for responses.
+ */
+function forcedToolName(toolChoice: any): string | undefined {
+  if (toolChoice?.type !== 'function') return undefined;
+  const name = toolChoice.function?.name ?? toolChoice.name;
+  return typeof name === 'string' && name ? name : undefined;
+}
+
 function buildTools(rawTools: any, toolChoice: any): Tool[] | undefined {
   if (!Array.isArray(rawTools) || rawTools.length === 0 || toolChoice === 'none') {
     return undefined;
   }
 
+  // Non-function tools (hosted `web_search`, `custom`, ...) have no pi-ai
+  // equivalent and are dropped rather than forwarded in a shape providers
+  // would reject.
   const tools = rawTools
-    .filter((tool) => tool?.type === 'function' && tool.function?.name)
-    .map((tool) => ({
-      name: String(tool.function.name),
-      description: String(tool.function.description ?? ''),
-      parameters: tool.function.parameters ?? { type: 'object', properties: {} },
-    })) satisfies Tool[];
+    .filter((tool) => tool?.type === 'function' && toolDefinition(tool)?.name)
+    .map((tool) => {
+      const definition = toolDefinition(tool);
+      return {
+        name: String(definition.name),
+        description: String(definition.description ?? ''),
+        parameters: definition.parameters ?? { type: 'object', properties: {} },
+      };
+    }) satisfies Tool[];
 
-  if (!tools.length) return undefined;
+  const forcedName = forcedToolName(toolChoice);
+  const selected = forcedName ? tools.filter((tool) => tool.name === forcedName) : tools;
 
-  const forcedName = toolChoice?.type === 'function' ? toolChoice.function?.name : undefined;
-  if (typeof forcedName === 'string' && forcedName) {
-    return tools.filter((tool) => tool.name === forcedName);
-  }
-
-  return tools;
+  // An empty `tools` array is rejected by some providers, so an unmatched
+  // forced name leaves the field unset instead.
+  return selected.length ? selected : undefined;
 }
 
 async function normalizeAssistantHistoryMessage(
