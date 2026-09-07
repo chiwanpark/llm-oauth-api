@@ -1,4 +1,4 @@
-import type { Provider } from '@earendil-works/pi-ai';
+import type { Model, Provider } from '@earendil-works/pi-ai';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { cerebrasProvider } from '@earendil-works/pi-ai/providers/cerebras';
 import { githubCopilotProvider } from '@earendil-works/pi-ai/providers/github-copilot';
@@ -18,6 +18,25 @@ export type SupportedProviderId =
   | 'opencode-go'
   | 'openrouter';
 
+const OPENROUTER_ATTRIBUTION_HEADERS = {
+  'HTTP-Referer': 'https://pi.dev',
+  'X-OpenRouter-Title': 'pi',
+  'X-OpenRouter-Categories': 'cli-agent',
+} as const;
+
+/** pi-ai forwards per-model headers only, so OpenRouter attribution rides on each model. */
+function withOpenRouterAttribution(): Provider {
+  const provider = openrouterProvider();
+  return {
+    ...provider,
+    getModels: () =>
+      provider.getModels().map((model: Model<any>) => ({
+        ...model,
+        headers: { ...OPENROUTER_ATTRIBUTION_HEADERS, ...model.headers },
+      })),
+  };
+}
+
 const providerFactories: Record<SupportedProviderId, () => Provider> = {
   anthropic: anthropicProvider,
   cerebras: cerebrasProvider,
@@ -26,7 +45,7 @@ const providerFactories: Record<SupportedProviderId, () => Provider> = {
   nvidia: nvidiaProvider,
   'openai-codex': openaiCodexProvider,
   'opencode-go': opencodeGoProvider,
-  openrouter: openrouterProvider,
+  openrouter: withOpenRouterAttribution,
 };
 
 export function getSupportedProviderIds(): SupportedProviderId[] {
