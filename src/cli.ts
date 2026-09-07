@@ -9,6 +9,7 @@ import {
   parseRefreshSeconds,
 } from './oauth-refresh.js';
 import { loadModelGroups } from './groups.js';
+import { loadRedactionConfig, NO_REDACTION } from './redaction.js';
 import { DEFAULT_MODEL_COOLDOWN_MS, parseCooldownSeconds } from './model-cooldown.js';
 import {
   createSupportedProvider,
@@ -32,6 +33,7 @@ program
     getSupportedProviderIds().join(','),
   )
   .option('--groups-file <path>', 'Path to JSON file defining model groups')
+  .option('--redaction-file <path>', 'Path to JSON file defining credential redaction rules')
   .option('--port <port>', 'Port to listen on', '3000')
   .option('--host <host>', 'Host to listen on', '0.0.0.0')
   .addOption(
@@ -66,7 +68,16 @@ program
       '  e.g. {"free": ["github-copilot:gpt-5.4-mini", "openai-codex:gpt-5-mini"]}\n' +
       '  makes the model "free" try github-copilot first and fall back to openai-codex.\n' +
       '  An entry without a ":" names another group and is flattened into its parent.\n' +
-      '  A member that fails is skipped for --model-cooldown seconds afterwards.',
+      '  A member that fails is skipped for --model-cooldown seconds afterwards.\n' +
+      '\nRedaction:\n' +
+      '  Pass --redaction-file <path> to a JSON object with a "rules" array.\n' +
+      '  e.g. {"rules": [{"name": "openai-key", "pattern": "sk-[A-Za-z0-9]{16,}"}]}\n' +
+      '  masks matching substrings in everything sent upstream.\n' +
+      '  Its "models" list scopes every rule to providers, groups, or\n' +
+      '  <provider>:<model> globs; omitting it masks on every model.\n' +
+      '  Its "replacement" sets the default mask, where {name} is the rule name.\n' +
+      '  A rule may set "captureGroup" to mask one group and keep the context\n' +
+      '  around it, e.g. (FOO_API_KEY=)(\\S+) with captureGroup 2.',
   )
   .action(async (options) => {
     const apiKey = process.env.LLM_OAUTH_API_KEY;
@@ -78,11 +89,19 @@ program
     const groups = options.groupsFile
       ? await loadModelGroups(options.groupsFile, resolveSupportedProviderIds(providerIds))
       : [];
+    const redactor = options.redactionFile
+      ? await loadRedactionConfig(
+          options.redactionFile,
+          resolveSupportedProviderIds(providerIds),
+          groups,
+        )
+      : NO_REDACTION;
 
     await startServer({
       authFile: options.authFile,
       providerIds,
       groups,
+      redactor,
       apiKey,
       port: Number(options.port),
       host: options.host,

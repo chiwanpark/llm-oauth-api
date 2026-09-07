@@ -39,6 +39,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 - automatic OAuth credential refresh
 - model groups with automatic fallback and cooldown for failing models
 - shared API key protection via `LLM_OAUTH_API_KEY`
+- pattern-based credential redaction on the request path, scoped per provider, model, or group
 
 ## Install
 
@@ -177,6 +178,140 @@ so does the window expiring. Change or disable the window with seconds:
 pnpm loa serve --auth-file ./auth.json --model-cooldown 60
 pnpm loa serve --auth-file ./auth.json --model-cooldown 0   # always try every member
 ```
+
+## Redacting credentials
+
+Agents paste secrets into a conversation without meaning to: a tool result holding `printenv`, a config file read into context, an `Authorization` header echoed back into a tool call. Redaction masks those substrings before the request leaves for the provider. Declare the patterns in a JSON file and point the server at it with `--redaction-file`:
+
+```json
+{
+  "models": ["anthropic", "openai-codex:gpt-5*", "free"],
+  "replacement": "<redacted:{name}>",
+  "rules": [
+    {
+      "name": "openai-key",
+      "pattern": "sk-[A-Za-z0-9]{16,}"
+    },
+    {
+      "name": "aws-access-key-id",
+      "pattern": "AKIA[0-9A-Z]{16}",
+      "replacement": "<aws-key>"
+    }
+  ]
+}
+```
+
+```bash
+pnpm loa serve --auth-file ./auth.json --redaction-file ./redaction.json
+```
+
+Without `--redaction-file` nothing is masked. The file is read once at startup, and any problem in it — an invalid regular expression, an unknown provider, a rule name used twice — stops the server with an error naming the file.
+
+`models` is the scope for the whole file: every rule applies to exactly those models, and nothing is masked for anything else. It is optional, and leaving it out masks on every model. Scope is a property of your deployment rather than of any one pattern — which providers you distrust does not change from one credential shape to the next — so it is stated once instead of on every rule. A rule that tries to set its own `models` is rejected at startup.
+
+`replacement` is the mask every rule uses unless it names its own. It is optional and defaults to `[REDACTED:{name}]`. In both places `{name}` expands to the rule name, so a file-wide mask can still say which pattern fired; write a plain literal such as `<redacted>` to mask everything identically instead. An empty string deletes the match rather than standing in for it.
+
+In the example above `openai-key` masks to `<redacted:openai-key>` from the file-wide setting, while `aws-access-key-id` overrides it and masks to `<aws-key>`.
+
+Each rule takes these fields:
+
+- `name` (required) — letters, digits, and hyphens; unique within the file, and the label used in logs.
+- `pattern` (required) — a JavaScript regular expression. A pattern that can match the empty string is rejected, because it would rewrite every message instead of masking anything.
+- `flags` (optional) — any of `i`, `m`, `s`, `u`, `v`. `g` is always applied, so every occurrence is masked, and `y` is rejected because it would make matching stateful.
+- `replacement` (optional) — overrides the file-wide mask for this rule.
+- `captureGroup` (optional) — mask only this capture group of the match instead of the whole match. See [Masking part of a match](#masking-part-of-a-match).
+
+Rules apply in declaration order, so an earlier replacement is visible to a later pattern.
+
+If two sets of patterns really do need different scopes, run them as what they are: separate concerns. Widen the file to cover both and write the narrower patterns so they only match what they should.
+
+### Masking part of a match
+
+Credentials are often recognised by what sits around them rather than by the secret itself: `FOO_API_KEY=`, the colon in a JDBC userinfo, a `password=` query parameter. A pattern can name that context, but by default the whole match is replaced, and the context goes with it:
+
+```json
+{ "name": "env-secret", "pattern": "[A-Z0-9_]*_API_KEY\\s*=\\s*\\S+" }
+```
+
+```
+export MY_APP_API_KEY=abc123secret  ->  export [REDACTED:env-secret]
+```
+
+Losing the variable name usually costs the model the ability to reason about the config at all. Set `captureGroup` to the group holding the secret and the surrounding text survives:
+
+```json
+{
+  "rules": [
+    {
+      "name": "env-secret",
+      "pattern": "([A-Z0-9_]*(?:API_KEY|PASSWORD|TOKEN|SECRET)\\s*=\\s*)(\\S+)",
+      "captureGroup": 2
+    },
+    {
+      "name": "jdbc-userinfo",
+      "pattern": "(jdbc:[a-z]+://[^:/@\\s]+:)([^@\\s]+)(@)",
+      "captureGroup": 2
+    },
+    {
+      "name": "jdbc-password",
+      "pattern": "([?&]password=)([^&\\s]+)",
+      "captureGroup": 2
+    }
+  ]
+}
+```
+
+```
+export MY_APP_API_KEY=abc123secret                   ->  export MY_APP_API_KEY=[REDACTED:env-secret]
+DB_PASSWORD=p@ss STRIPE_API_KEY=sk_live_9999         ->  DB_PASSWORD=[REDACTED:env-secret] STRIPE_API_KEY=[REDACTED:env-secret]
+jdbc:postgresql://dbuser:s3cr3tpw@db.host:5432/app   ->  jdbc:postgresql://dbuser:[REDACTED:jdbc-userinfo]@db.host:5432/app
+jdbc:mysql://db/app?user=root&password=hunter2&ssl=true  ->  jdbc:mysql://db/app?user=root&password=[REDACTED:jdbc-password]&ssl=true
+```
+
+Groups are counted left to right by their opening parenthesis, starting at 1; `(?:...)` does not count. A `captureGroup` the pattern does not have is rejected at startup. If the group matches nothing on a given occurrence — an optional group that did not participate — that occurrence is left alone.
+
+Capture references such as `$1` in a `replacement` are **not** expanded; they would be written out literally, so a replacement containing one is rejected at startup rather than silently producing `$1` in the transcript. `captureGroup` is the supported way to keep part of a match.
+
+Lookbehind is an alternative for simple cases, since the proxy imposes no restriction on it: `(?<=[A-Z_]*_API_KEY=)\S+` masks the same value without any group. `captureGroup` is usually easier to read, and works where a variable-length lookbehind would be awkward.
+
+### Choosing the models
+
+An entry in `models` follows the convention of the groups file: an entry with a `:` names a model, and an entry without one names a provider or a group. `*` is a wildcard in either half.
+
+| Entry                         | Matches                                                     |
+| ----------------------------- | ----------------------------------------------------------- |
+| `*`                           | every model                                                 |
+| `anthropic`                   | every model from that provider                              |
+| `anthropic:claude-sonnet-4-5` | that one model                                              |
+| `openai-codex:gpt-5*`         | models matching the glob within that provider               |
+| `*:claude-sonnet-4-5`         | that model id from any provider that publishes it           |
+| `free`                        | requests for the group `free`, whichever member serves them |
+
+Listing several entries is a union: the scope matches if any of them matches. A group entry is matched against the model id the client asked for, so a scope written for `free` stays in force as the group falls back from one member to the next. Group names are read case-insensitively with `_` as `-`, exactly as they are in the groups file.
+
+The scope is evaluated per attempt rather than once per request, so a group that falls back to a provider outside it stops masking, and one that falls back into it starts.
+
+### What is and is not redacted
+
+Redaction runs on the request path only, over everything the proxy is about to send upstream:
+
+- the system prompt, including instructions merged from `system` and `developer` messages
+- user turns, both plain strings and the text blocks of multi-part content
+- assistant turns replayed as history, and the arguments of the tool calls inside them
+- tool results
+- tool descriptions
+
+Assistant history is included on purpose. A model that quoted a key back in an earlier turn would otherwise re-send it in clear text on the next request, and a client is free to put anything it likes in an assistant turn.
+
+These are left untouched:
+
+- **the response stream.** Output flowing back to your client is not masked. If a credential appears there it already left your machine, so masking it protects nothing while breaking token counts and forcing every SSE chunk to be buffered.
+- **reasoning content and thinking signatures.** The readable half is paired with an encrypted blob the provider validates, and rewriting one half invalidates the pair.
+- **image bytes.** A credential pattern says nothing about base64 pixels, and a replacement inside them corrupts the image.
+- **tool call ids.** They pair a call with its result; rewriting one breaks the conversation.
+- **tool parameter schemas.** Providers validate them and build constrained sampling from them.
+
+When a rule matches, the server logs the rule name and how many substrings it replaced. The matched text is never logged — writing the secret into a log line would move the leak rather than close it.
 
 ## Calling the API
 

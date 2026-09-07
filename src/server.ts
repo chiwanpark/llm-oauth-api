@@ -61,11 +61,14 @@ import {
   type ModelGroup,
 } from './groups.js';
 import { createSupportedProviders } from './providers.js';
+import { NO_REDACTION, type Redactor } from './redaction.js';
 
 export type ServerOptions = {
   authFile: string;
   providerIds?: string[];
   groups?: ModelGroup[];
+  /** Masks credentials in everything sent upstream; defaults to no masking. */
+  redactor?: Redactor;
   apiKey: string;
   port: number;
   host: string;
@@ -115,6 +118,7 @@ export async function startServer(options: ServerOptions): Promise<void> {
   });
 
   const groups = options.groups ?? [];
+  const redactor = options.redactor ?? NO_REDACTION;
   const cooldown = createModelCooldown({
     cooldownMs: options.modelCooldownMs ?? DEFAULT_MODEL_COOLDOWN_MS,
   });
@@ -122,6 +126,15 @@ export async function startServer(options: ServerOptions): Promise<void> {
     app.log.info(
       { group: group.name, members: describeGroup(group), cooldownMs: cooldown.cooldownMs },
       'Model group registered',
+    );
+  }
+  if (redactor.rules.length) {
+    app.log.info(
+      {
+        rules: redactor.rules.map((rule) => rule.name),
+        models: redactor.selectors.map((selector) => selector.text),
+      },
+      'Redaction enabled',
     );
   }
 
@@ -133,11 +146,11 @@ export async function startServer(options: ServerOptions): Promise<void> {
   });
 
   app.post('/v1/chat/completions', async (request, reply) => {
-    await handleChatCompletions(models, groups, request, reply, cooldown);
+    await handleChatCompletions(models, groups, request, reply, cooldown, redactor);
   });
 
   app.post('/v1/responses', async (request, reply) => {
-    await handleResponses(models, groups, request, reply, cooldown);
+    await handleResponses(models, groups, request, reply, cooldown, redactor);
   });
 
   await registerClient(app);
@@ -326,6 +339,7 @@ async function handleChatCompletions(
   request: FastifyRequest,
   reply: FastifyReply,
   cooldown?: ModelCooldown,
+  redactor?: Redactor,
 ) {
   const body = request.body as any;
 
@@ -357,7 +371,7 @@ async function handleChatCompletions(
 
   if (!validateInclude(body, reply)) return;
 
-  await runCompletion(models, groups, request, reply, chatAdapter, cooldown);
+  await runCompletion(models, groups, request, reply, chatAdapter, cooldown, redactor);
 }
 
 async function handleResponses(
@@ -366,6 +380,7 @@ async function handleResponses(
   request: FastifyRequest,
   reply: FastifyReply,
   cooldown?: ModelCooldown,
+  redactor?: Redactor,
 ) {
   const body = request.body as any;
 
@@ -384,7 +399,7 @@ async function handleResponses(
 
   if (!validateInclude(body, reply)) return;
 
-  await runCompletion(models, groups, request, reply, responsesAdapter, cooldown);
+  await runCompletion(models, groups, request, reply, responsesAdapter, cooldown, redactor);
 }
 
 /**
@@ -425,6 +440,9 @@ function validateInclude(body: any, reply: FastifyReply): boolean {
  * later requests start at the next member instead of paying for the same
  * failure again. The failure is still reported, because a skipped member is
  * part of the explanation when the whole group comes up empty.
+ *
+ * Redaction is applied per attempt rather than once up front, because fallback
+ * can move a request to a provider covered by a different set of rules.
  */
 export async function runCompletion(
   models: MutableModels,
@@ -433,6 +451,7 @@ export async function runCompletion(
   reply: FastifyReply,
   adapter: EndpointAdapter,
   cooldown: ModelCooldown = NO_COOLDOWN,
+  redactor: Redactor = NO_REDACTION,
 ): Promise<void> {
   const body = request.body as any;
   const requestedModel = typeof body?.model === 'string' ? body.model : undefined;
@@ -501,7 +520,8 @@ export async function runCompletion(
         continue;
       }
 
-      const context = await adapter.buildContext(model, body);
+      const built = await adapter.buildContext(model, body);
+      const context = redactOutbound(built, redactor, model, requestedModel, request.log);
       const options = adapter.buildOptions(body, signal);
       const render = buildRenderOptions(body);
 
@@ -572,6 +592,35 @@ export async function runCompletion(
   }
 
   sendExhausted(reply, requestedModel, group !== undefined, failures);
+}
+
+/**
+ * Masks credentials in everything about to leave for the provider.
+ *
+ * Only counts are logged. The matched text is the secret itself, so naming it in
+ * a log line would move the leak rather than close it.
+ */
+function redactOutbound(
+  context: any,
+  redactor: Redactor,
+  model: Model<any>,
+  requestedModel: string,
+  logger: FastifyBaseLogger,
+): any {
+  const { context: redacted, summary } = redactor.redact(context, {
+    providerId: model.provider,
+    modelId: model.id,
+    requestedModel,
+  });
+
+  if (summary.total > 0) {
+    logger.info(
+      { model: exposedModelId(model), requestedModel, redacted: summary.byRule },
+      `redacted ${summary.total} credential match(es) before sending upstream`,
+    );
+  }
+
+  return redacted;
 }
 
 /**
