@@ -62,6 +62,7 @@ import {
 } from './groups.js';
 import { createSupportedProviders } from './providers.js';
 import { NO_REDACTION, type Redactor } from './redaction.js';
+import { withSessionAffinity } from './session.js';
 
 export type ServerOptions = {
   authFile: string;
@@ -522,7 +523,12 @@ export async function runCompletion(
 
       const built = await adapter.buildContext(model, body);
       const context = redactOutbound(built, redactor, model, requestedModel, request.log);
-      const options = adapter.buildOptions(body, signal);
+      const options = withSessionAffinity(
+        adapter.buildOptions(body, signal),
+        model,
+        request,
+        context,
+      );
       const render = buildRenderOptions(body);
 
       if (body.stream) {
