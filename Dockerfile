@@ -33,4 +33,4 @@ EXPOSE 3000
 VOLUME ["/data"]
 
 ENTRYPOINT ["node", "dist/cli.js"]
-CMD ["serve", "--auth-file", "/data/auth.json", "--port", "3000", "--host", "0.0.0.0"]
+CMD ["serve", "--auth-file", "/data/auth.yaml", "--port", "3000", "--host", "0.0.0.0"]

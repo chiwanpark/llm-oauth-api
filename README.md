@@ -50,17 +50,17 @@ pnpm build
 
 ## Authenticate a provider
 
-Credentials are stored in a JSON file you choose.
+Credentials are stored in a YAML file you choose.
 
 ```bash
-pnpm loa login anthropic --auth-file ./auth.json
-pnpm loa login cerebras --auth-file ./auth.json
-pnpm loa login github-copilot --auth-file ./auth.json
-pnpm loa login google --auth-file ./auth.json
-pnpm loa login nvidia --auth-file ./auth.json
-pnpm loa login openai-codex --auth-file ./auth.json
-pnpm loa login opencode-go --auth-file ./auth.json
-pnpm loa login openrouter --auth-file ./auth.json
+pnpm loa login anthropic --auth-file ./auth.yaml
+pnpm loa login cerebras --auth-file ./auth.yaml
+pnpm loa login github-copilot --auth-file ./auth.yaml
+pnpm loa login google --auth-file ./auth.yaml
+pnpm loa login nvidia --auth-file ./auth.yaml
+pnpm loa login openai-codex --auth-file ./auth.yaml
+pnpm loa login opencode-go --auth-file ./auth.yaml
+pnpm loa login openrouter --auth-file ./auth.yaml
 ```
 
 For Google/Gemini, this stores a Gemini API key. You can also provide it with the `GEMINI_API_KEY` environment variable.
@@ -72,7 +72,7 @@ can also provide an existing key with the `OPENROUTER_API_KEY` environment varia
 Providers that support both flows default to OAuth. Use `--api-key` to store a key instead:
 
 ```bash
-pnpm loa login openrouter --auth-file ./auth.json --api-key
+pnpm loa login openrouter --auth-file ./auth.yaml --api-key
 ```
 
 List supported providers:
@@ -84,21 +84,21 @@ pnpm loa providers
 Remove stored credentials:
 
 ```bash
-pnpm loa logout anthropic --auth-file ./auth.json
+pnpm loa logout anthropic --auth-file ./auth.yaml
 ```
 
 ## Run the server
 
 ```bash
 export LLM_OAUTH_API_KEY=your-shared-api-key
-pnpm loa serve --auth-file ./auth.json --port 3000
+pnpm loa serve --auth-file ./auth.yaml --port 3000
 ```
 
 Optional provider filtering:
 
 ```bash
 pnpm loa serve \
-  --auth-file ./auth.json \
+  --auth-file ./auth.yaml \
   --providers anthropic,cerebras,github-copilot,google,nvidia,openai-codex,openrouter
 ```
 
@@ -108,7 +108,7 @@ back to the auth file. Change the timing with seconds-based options:
 
 ```bash
 pnpm loa serve \
-  --auth-file ./auth.json \
+  --auth-file ./auth.yaml \
   --oauth-refresh-interval 30 \
   --oauth-refresh-before-expiry 120
 ```
@@ -121,17 +121,17 @@ request-time refresh remains available as a fallback.
 ## Model groups
 
 A group is a virtual model backed by an ordered list of real models. Because providers give the
-same model different names, every member names its own model explicitly. Declare groups in a JSON
+same model different names, every member names its own model explicitly. Declare groups in a YAML
 file that maps each group name to its members, and point the server at it with `--groups-file`:
 
-```json
-{
-  "free": ["github-copilot:gpt-5.4-mini", "openai-codex:gpt-5-mini"]
-}
+```yaml
+free:
+  - github-copilot:gpt-5.4-mini
+  - openai-codex:gpt-5-mini
 ```
 
 ```bash
-pnpm loa serve --auth-file ./auth.json --groups-file ./groups.json
+pnpm loa serve --auth-file ./auth.yaml --groups-file ./groups.yaml
 ```
 
 Without `--groups-file` the server exposes no groups. The file is read once at startup, and any
@@ -151,12 +151,16 @@ curl http://localhost:3000/v1/chat/completions \
 Add one key per virtual model to expose several of them. A member written without a `:` names
 another group, which is spliced into its parent at that position:
 
-```json
-{
-  "fast": ["github-copilot:gpt-5-mini", "openai-codex:gpt-5.4-mini"],
-  "smart": ["anthropic:claude-sonnet-4-5", "opencode-go:claude-sonnet-4-5"],
-  "all": ["fast", "google:gemini-2.5-pro"]
-}
+```yaml
+fast:
+  - github-copilot:gpt-5-mini
+  - openai-codex:gpt-5.4-mini
+smart:
+  - anthropic:claude-sonnet-4-5
+  - opencode-go:claude-sonnet-4-5
+all:
+  - fast
+  - google:gemini-2.5-pro
 ```
 
 Here `all` tries `github-copilot:gpt-5-mini`, then `openai-codex:gpt-5.4-mini`, then
@@ -175,34 +179,30 @@ member instead of paying for the same failure again. Responding successfully cle
 so does the window expiring. Change or disable the window with seconds:
 
 ```bash
-pnpm loa serve --auth-file ./auth.json --model-cooldown 60
-pnpm loa serve --auth-file ./auth.json --model-cooldown 0   # always try every member
+pnpm loa serve --auth-file ./auth.yaml --model-cooldown 60
+pnpm loa serve --auth-file ./auth.yaml --model-cooldown 0   # always try every member
 ```
 
 ## Redacting credentials
 
-Agents paste secrets into a conversation without meaning to: a tool result holding `printenv`, a config file read into context, an `Authorization` header echoed back into a tool call. Redaction masks those substrings before the request leaves for the provider. Declare the patterns in a JSON file and point the server at it with `--redaction-file`:
+Agents paste secrets into a conversation without meaning to: a tool result holding `printenv`, a config file read into context, an `Authorization` header echoed back into a tool call. Redaction masks those substrings before the request leaves for the provider. Declare the patterns in a YAML file and point the server at it with `--redaction-file`:
 
-```json
-{
-  "models": ["anthropic", "openai-codex:gpt-5*", "free"],
-  "replacement": "<redacted:{name}>",
-  "rules": [
-    {
-      "name": "openai-key",
-      "pattern": "sk-[A-Za-z0-9]{16,}"
-    },
-    {
-      "name": "aws-access-key-id",
-      "pattern": "AKIA[0-9A-Z]{16}",
-      "replacement": "<aws-key>"
-    }
-  ]
-}
+```yaml
+models:
+  - anthropic
+  - 'openai-codex:gpt-5*'
+  - free
+replacement: '<redacted:{name}>'
+rules:
+  - name: openai-key
+    pattern: 'sk-[A-Za-z0-9]{16,}'
+  - name: aws-access-key-id
+    pattern: 'AKIA[0-9A-Z]{16}'
+    replacement: '<aws-key>'
 ```
 
 ```bash
-pnpm loa serve --auth-file ./auth.json --redaction-file ./redaction.json
+pnpm loa serve --auth-file ./auth.yaml --redaction-file ./redaction.yaml
 ```
 
 Without `--redaction-file` nothing is masked. The file is read once at startup, and any problem in it — an invalid regular expression, an unknown provider, a rule name used twice — stops the server with an error naming the file.
@@ -229,8 +229,9 @@ If two sets of patterns really do need different scopes, run them as what they a
 
 Credentials are often recognised by what sits around them rather than by the secret itself: `FOO_API_KEY=`, the colon in a JDBC userinfo, a `password=` query parameter. A pattern can name that context, but by default the whole match is replaced, and the context goes with it:
 
-```json
-{ "name": "env-secret", "pattern": "[A-Z0-9_]*_API_KEY\\s*=\\s*\\S+" }
+```yaml
+- name: env-secret
+  pattern: '[A-Z0-9_]*_API_KEY\s*=\s*\S+'
 ```
 
 ```
@@ -239,26 +240,17 @@ export MY_APP_API_KEY=abc123secret  ->  export [REDACTED:env-secret]
 
 Losing the variable name usually costs the model the ability to reason about the config at all. Set `captureGroup` to the group holding the secret and the surrounding text survives:
 
-```json
-{
-  "rules": [
-    {
-      "name": "env-secret",
-      "pattern": "([A-Z0-9_]*(?:API_KEY|PASSWORD|TOKEN|SECRET)\\s*=\\s*)(\\S+)",
-      "captureGroup": 2
-    },
-    {
-      "name": "jdbc-userinfo",
-      "pattern": "(jdbc:[a-z]+://[^:/@\\s]+:)([^@\\s]+)(@)",
-      "captureGroup": 2
-    },
-    {
-      "name": "jdbc-password",
-      "pattern": "([?&]password=)([^&\\s]+)",
-      "captureGroup": 2
-    }
-  ]
-}
+```yaml
+rules:
+  - name: env-secret
+    pattern: '([A-Z0-9_]*(?:API_KEY|PASSWORD|TOKEN|SECRET)\s*=\s*)(\S+)'
+    captureGroup: 2
+  - name: jdbc-userinfo
+    pattern: '(jdbc:[a-z]+://[^:/@\s]+:)([^@\s]+)(@)'
+    captureGroup: 2
+  - name: jdbc-password
+    pattern: '([?&]password=)([^&\s]+)'
+    captureGroup: 2
 ```
 
 ```

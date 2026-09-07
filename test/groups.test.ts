@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
+import { stringify as stringifyYaml } from 'yaml';
+
 import type { Model, MutableModels } from '@earendil-works/pi-ai';
 
 import {
@@ -36,8 +38,8 @@ function tempDir(): Promise<string> {
 }
 
 async function writeGroupsFile(config: unknown): Promise<string> {
-  const file = path.join(await tempDir(), 'groups.json');
-  await writeFile(file, JSON.stringify(config, null, 2), 'utf8');
+  const file = path.join(await tempDir(), 'groups.yaml');
+  await writeFile(file, stringifyYaml(config), 'utf8');
   return file;
 }
 
@@ -219,11 +221,11 @@ test('rejects two keys that name the same group', () => {
   );
 });
 
-test('rejects a file that is not an object of member arrays', () => {
+test('rejects a file that is not a mapping of member lists', () => {
   for (const config of [null, 'free', 42, ['google:x']]) {
     assert.throws(
       () => parseModelGroups(config, allProviders),
-      /must contain a JSON object mapping group names to arrays/,
+      /must contain a YAML mapping of group names to lists/,
     );
   }
 
@@ -469,13 +471,13 @@ test('names the file in a configuration error', async () => {
 });
 
 test('reports a missing or malformed file instead of starting without groups', async () => {
-  const missing = path.join(await tempDir(), 'absent.json');
+  const missing = path.join(await tempDir(), 'absent.yaml');
   await assert.rejects(
     () => loadModelGroups(missing, allProviders),
     new RegExp(`Groups file not found: ${escapeRegExp(missing)}`),
   );
 
-  const broken = path.join(await tempDir(), 'groups.json');
-  await writeFile(broken, '{ "free": [ ', 'utf8');
-  await assert.rejects(() => loadModelGroups(broken, allProviders), /is not valid JSON/);
+  const broken = path.join(await tempDir(), 'groups.yaml');
+  await writeFile(broken, 'free: [\n  - unterminated', 'utf8');
+  await assert.rejects(() => loadModelGroups(broken, allProviders), /is not valid YAML/);
 });

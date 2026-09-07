@@ -1,12 +1,14 @@
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+
 import type { CredentialStore, Credential, CredentialInfo } from '@earendil-works/pi-ai';
 
-async function readJsonFile(filePath: string): Promise<Record<string, Credential>> {
+async function readYamlFile(filePath: string): Promise<Record<string, Credential>> {
   try {
     const raw = await readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw) as Record<string, Credential>;
+    const parsed = parseYaml(raw) as Record<string, Credential> | null;
     return parsed && typeof parsed === 'object' ? parsed : {};
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -16,18 +18,18 @@ async function readJsonFile(filePath: string): Promise<Record<string, Credential
   }
 }
 
-async function writeJsonFileAtomic(
+async function writeYamlFileAtomic(
   filePath: string,
   data: Record<string, Credential>,
 ): Promise<void> {
   const dir = path.dirname(filePath);
   await mkdir(dir, { recursive: true });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tempPath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 });
+  await writeFile(tempPath, stringifyYaml(data), { mode: 0o600 });
   await rename(tempPath, filePath);
 }
 
-export class JsonCredentialStore implements CredentialStore {
+export class YamlCredentialStore implements CredentialStore {
   private readonly filePath: string;
   private queue: Promise<void> = Promise.resolve();
 
@@ -36,12 +38,12 @@ export class JsonCredentialStore implements CredentialStore {
   }
 
   async read(providerId: string): Promise<Credential | undefined> {
-    const data = await readJsonFile(this.filePath);
+    const data = await readYamlFile(this.filePath);
     return data[providerId];
   }
 
   async list(): Promise<readonly CredentialInfo[]> {
-    const data = await readJsonFile(this.filePath);
+    const data = await readYamlFile(this.filePath);
     return Object.entries(data).map(([providerId, credential]) => ({
       providerId,
       type: credential.type,
@@ -53,25 +55,25 @@ export class JsonCredentialStore implements CredentialStore {
     fn: (current: Credential | undefined) => Promise<Credential | undefined>,
   ): Promise<Credential | undefined> {
     return this.serialized(async () => {
-      const data = await readJsonFile(this.filePath);
+      const data = await readYamlFile(this.filePath);
       const next = await fn(data[providerId]);
       if (next !== undefined) {
         data[providerId] = next;
       }
-      await writeJsonFileAtomic(this.filePath, data);
+      await writeYamlFileAtomic(this.filePath, data);
       return data[providerId];
     });
   }
 
   async delete(providerId: string): Promise<void> {
     await this.serialized(async () => {
-      const data = await readJsonFile(this.filePath);
+      const data = await readYamlFile(this.filePath);
       delete data[providerId];
       if (Object.keys(data).length === 0) {
         await rm(this.filePath, { force: true });
         return;
       }
-      await writeJsonFileAtomic(this.filePath, data);
+      await writeYamlFileAtomic(this.filePath, data);
     });
   }
 

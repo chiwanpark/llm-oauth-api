@@ -12,7 +12,7 @@ import type {
   Provider,
 } from '@earendil-works/pi-ai';
 
-import { JsonCredentialStore } from '../src/credential-store.js';
+import { YamlCredentialStore } from '../src/credential-store.js';
 import {
   parseRefreshSeconds,
   refreshExpiringOAuthCredentials,
@@ -109,8 +109,8 @@ test('parseRefreshSeconds accepts positive intervals and zero pre-expiry windows
 
 test('refreshes and persists a credential inside the pre-expiry window', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'llm-oauth-refresh-'));
-  const authFile = join(directory, 'auth.json');
-  const credentials = new JsonCredentialStore(authFile);
+  const authFile = join(directory, 'auth.yaml');
+  const credentials = new YamlCredentialStore(authFile);
   const initial = oauthCredential(1_100);
   const refreshed = oauthCredential(10_000, 'new');
   let refreshCalls = 0;

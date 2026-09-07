@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
+import { stringify as stringifyYaml } from 'yaml';
+
 import type { AssistantMessage, Context, Model, MutableModels } from '@earendil-works/pi-ai';
 
 import type { ModelGroup } from '../src/groups.js';
@@ -62,8 +64,8 @@ function userText(context: Context): string {
 
 async function writeRedactionFile(config: unknown): Promise<string> {
   const directory = await mkdtemp(path.join(tmpdir(), 'loa-redaction-'));
-  const file = path.join(directory, 'redaction.json');
-  await writeFile(file, JSON.stringify(config, null, 2), 'utf8');
+  const file = path.join(directory, 'redaction.yaml');
+  await writeFile(file, stringifyYaml(config), 'utf8');
   return file;
 }
 
@@ -600,9 +602,9 @@ test('NO_REDACTION passes a context through untouched', () => {
   assert.equal(summary.total, 0);
 });
 
-test('rejects a config that is not an object with rules', () => {
-  assert.throws(() => parseRedactionConfig([], allProviders), /must contain a JSON object/);
-  assert.throws(() => parseRedactionConfig({}, allProviders), /must contain a "rules" array/);
+test('rejects a config that is not a mapping with rules', () => {
+  assert.throws(() => parseRedactionConfig([], allProviders), /must contain a YAML mapping/);
+  assert.throws(() => parseRedactionConfig({}, allProviders), /must contain a "rules" list/);
 });
 
 test('rejects a rule with no name or a bad name', () => {
@@ -691,15 +693,15 @@ test('a file without models covers every model', async () => {
 });
 
 test('a missing file is a startup error naming the path', async () => {
-  const file = path.join(tmpdir(), 'loa-redaction-missing', 'redaction.json');
+  const file = path.join(tmpdir(), 'loa-redaction-missing', 'redaction.yaml');
   await assert.rejects(loadRedactionConfig(file, allProviders), /Redaction file not found/);
 });
 
 test('a malformed file is a startup error', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'loa-redaction-'));
-  const file = path.join(directory, 'redaction.json');
-  await writeFile(file, '{ not json', 'utf8');
-  await assert.rejects(loadRedactionConfig(file, allProviders), /is not valid JSON/);
+  const file = path.join(directory, 'redaction.yaml');
+  await writeFile(file, 'rules: [\n  - name: broken', 'utf8');
+  await assert.rejects(loadRedactionConfig(file, allProviders), /is not valid YAML/);
 });
 
 test('a group entry in a file resolves against the loaded groups', async () => {

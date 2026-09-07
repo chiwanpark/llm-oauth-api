@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { parse as parseYaml } from 'yaml';
+
 import type { Model, MutableModels } from '@earendil-works/pi-ai';
 
 import { resolveModelByName, type OpenAIModelInfo } from './openai-compat.js';
@@ -41,7 +43,7 @@ type RawGroup = {
 };
 
 /**
- * Groups a client can request, as written in the JSON file.
+ * Groups a client can request, as written in the YAML file.
  *
  * Each key is a group name and each entry is either `<provider>:<model>` or the
  * name of another group declared in the same file.
@@ -99,9 +101,9 @@ export async function loadModelGroups(
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = parseYaml(raw);
   } catch (error) {
-    throw new Error(`${resolved} is not valid JSON: ${describeError(error)}`, { cause: error });
+    throw new Error(`${resolved} is not valid YAML: ${describeError(error)}`, { cause: error });
   }
 
   return parseModelGroups(parsed, enabledProviderIds, resolved);
@@ -131,7 +133,7 @@ function parseRawGroups(
 ): Map<string, RawGroup> {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
     throw new Error(
-      `${source} must contain a JSON object mapping group names to arrays of ` +
+      `${source} must contain a YAML mapping of group names to lists of ` +
         '"<provider>:<model>" entries',
     );
   }

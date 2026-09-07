@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { parse as parseYaml } from 'yaml';
+
 import type { Context, Message, Tool } from '@earendil-works/pi-ai';
 
 import type { ModelGroup } from './groups.js';
@@ -136,9 +138,9 @@ export async function loadRedactionConfig(
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = parseYaml(raw);
   } catch (error) {
-    throw new Error(`${resolved} is not valid JSON: ${describeError(error)}`, { cause: error });
+    throw new Error(`${resolved} is not valid YAML: ${describeError(error)}`, { cause: error });
   }
 
   return parseRedactionConfig(parsed, enabledProviderIds, groups, resolved);
@@ -163,12 +165,12 @@ export function parseRedactionConfig(
   source: string = DEFAULT_SOURCE,
 ): Redactor {
   if (!config || typeof config !== 'object' || Array.isArray(config)) {
-    throw new Error(`${source} must contain a JSON object with a "rules" array`);
+    throw new Error(`${source} must contain a YAML mapping with a "rules" list`);
   }
 
   const rulesValue = (config as Record<string, unknown>).rules;
   if (!Array.isArray(rulesValue)) {
-    throw new Error(`${source} must contain a "rules" array`);
+    throw new Error(`${source} must contain a "rules" list`);
   }
 
   const enabled = new Set<string>(enabledProviderIds);

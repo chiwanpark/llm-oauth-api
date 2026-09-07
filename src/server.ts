@@ -19,7 +19,7 @@ import Fastify, {
   type FastifyRequest,
 } from 'fastify';
 
-import { JsonCredentialStore } from './credential-store.js';
+import { YamlCredentialStore } from './credential-store.js';
 import {
   createModelCooldown,
   DEFAULT_MODEL_COOLDOWN_MS,
@@ -81,7 +81,7 @@ export type ServerOptions = {
 
 export async function startServer(options: ServerOptions): Promise<void> {
   const app = Fastify({ logger: true });
-  const credentials = new JsonCredentialStore(options.authFile);
+  const credentials = new YamlCredentialStore(options.authFile);
   const providers = createSupportedProviders(options.providerIds).map((provider) =>
     withTokenRefreshLogging(provider, app.log),
   );

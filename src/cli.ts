@@ -2,7 +2,7 @@
 import { Command, Option } from 'commander';
 
 import { createCliAuthCallbacks, confirmOverwrite } from './auth-ui.js';
-import { JsonCredentialStore } from './credential-store.js';
+import { YamlCredentialStore } from './credential-store.js';
 import {
   DEFAULT_OAUTH_REFRESH_BEFORE_EXPIRY_MS,
   DEFAULT_OAUTH_REFRESH_INTERVAL_MS,
@@ -26,14 +26,14 @@ program
 
 program
   .command('serve')
-  .requiredOption('--auth-file <path>', 'Path to auth JSON file')
+  .requiredOption('--auth-file <path>', 'Path to auth YAML file')
   .option(
     '--providers <providers>',
     'Comma-separated providers to expose',
     getSupportedProviderIds().join(','),
   )
-  .option('--groups-file <path>', 'Path to JSON file defining model groups')
-  .option('--redaction-file <path>', 'Path to JSON file defining credential redaction rules')
+  .option('--groups-file <path>', 'Path to YAML file defining model groups')
+  .option('--redaction-file <path>', 'Path to YAML file defining credential redaction rules')
   .option('--port <port>', 'Port to listen on', '3000')
   .option('--host <host>', 'Host to listen on', '0.0.0.0')
   .addOption(
@@ -64,14 +64,20 @@ program
   .addHelpText(
     'after',
     '\nModel groups:\n' +
-      '  Pass --groups-file <path> to a JSON object mapping a group name to its members.\n' +
-      '  e.g. {"free": ["github-copilot:gpt-5.4-mini", "openai-codex:gpt-5-mini"]}\n' +
+      '  Pass --groups-file <path> to a YAML mapping of a group name to its members.\n' +
+      '  e.g.\n' +
+      '    free:\n' +
+      '      - github-copilot:gpt-5.4-mini\n' +
+      '      - openai-codex:gpt-5-mini\n' +
       '  makes the model "free" try github-copilot first and fall back to openai-codex.\n' +
       '  An entry without a ":" names another group and is flattened into its parent.\n' +
       '  A member that fails is skipped for --model-cooldown seconds afterwards.\n' +
       '\nRedaction:\n' +
-      '  Pass --redaction-file <path> to a JSON object with a "rules" array.\n' +
-      '  e.g. {"rules": [{"name": "openai-key", "pattern": "sk-[A-Za-z0-9]{16,}"}]}\n' +
+      '  Pass --redaction-file <path> to a YAML mapping with a "rules" list.\n' +
+      '  e.g.\n' +
+      '    rules:\n' +
+      '      - name: openai-key\n' +
+      '        pattern: sk-[A-Za-z0-9]{16,}\n' +
       '  masks matching substrings in everything sent upstream.\n' +
       '  Its "models" list scopes every rule to providers, groups, or\n' +
       '  <provider>:<model> globs; omitting it masks on every model.\n' +
@@ -115,12 +121,12 @@ program
 program
   .command('login')
   .argument('<provider>', `Provider to authenticate (${getSupportedProviderIds().join(', ')})`)
-  .requiredOption('--auth-file <path>', 'Path to auth JSON file')
+  .requiredOption('--auth-file <path>', 'Path to auth YAML file')
   .option('--force', 'Overwrite existing credential without confirmation', false)
   .option('--api-key', 'Store an API key instead of running the OAuth flow', false)
   .action(async (providerName, options) => {
     const provider = createSupportedProvider(providerName);
-    const store = new JsonCredentialStore(options.authFile);
+    const store = new YamlCredentialStore(options.authFile);
     const existing = await store.read(provider.id);
     if (existing && !options.force) {
       const overwrite = await confirmOverwrite(provider.id);
@@ -152,10 +158,10 @@ program
 program
   .command('logout')
   .argument('<provider>', `Provider credential to remove (${getSupportedProviderIds().join(', ')})`)
-  .requiredOption('--auth-file <path>', 'Path to auth JSON file')
+  .requiredOption('--auth-file <path>', 'Path to auth YAML file')
   .action(async (providerName, options) => {
     const provider = createSupportedProvider(providerName);
-    const store = new JsonCredentialStore(options.authFile);
+    const store = new YamlCredentialStore(options.authFile);
     await store.delete(provider.id);
     console.log(`Removed credentials for ${provider.id} from ${options.authFile}`);
   });
