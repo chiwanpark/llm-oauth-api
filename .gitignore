@@ -1,5 +1,6 @@
 node_modules/
 dist/
 auth.yaml
-auth.json
+groups.yaml
+redaction.yaml
 *.log
