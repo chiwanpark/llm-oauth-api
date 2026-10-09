@@ -474,6 +474,33 @@ test('masks system prompt, user, assistant, and tool result turns', () => {
   assert.equal(summary.total, 4);
 });
 
+test('masks transcript system messages, their sections, and added tools', () => {
+  const redactor = build([openaiKeyRule()]);
+  const context: Context = {
+    messages: [
+      {
+        role: 'system',
+        content: [{ type: 'text', text: `system ${KEY}` }],
+        sections: { env: `section ${KEY}`, removed: null },
+        toolsAdded: [{ name: 'fetch', description: `tool ${KEY}`, parameters: {} as any }],
+        timestamp: 1,
+      },
+    ],
+  };
+
+  const { context: out, summary } = redactor.redact(
+    context,
+    target('anthropic', 'claude-sonnet-4-5'),
+  );
+
+  const system = out.messages[0];
+  assert.ok(system?.role === 'system');
+  assert.deepEqual(system.content, [{ type: 'text', text: 'system [REDACTED:openai-key]' }]);
+  assert.deepEqual(system.sections, { env: 'section [REDACTED:openai-key]', removed: null });
+  assert.equal(system.toolsAdded?.[0]?.description, 'tool [REDACTED:openai-key]');
+  assert.equal(summary.total, 3);
+});
+
 test('masks user text blocks but never image data', () => {
   const redactor = build([openaiKeyRule()]);
   const context: Context = {

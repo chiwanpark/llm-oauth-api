@@ -501,6 +501,28 @@ export function redactContext(context: Context, rules: readonly RedactionRule[])
 
 function redactMessage(message: Message, mask: (value: string) => string): Message {
   switch (message.role) {
+    case 'system':
+      return {
+        ...message,
+        content:
+          typeof message.content === 'string'
+            ? mask(message.content)
+            : message.content.map((block) => ({ ...block, text: mask(block.text) })),
+        ...(message.sections
+          ? {
+              sections: Object.fromEntries(
+                Object.entries(message.sections).map(([name, text]) => [
+                  name,
+                  text === null ? null : mask(text),
+                ]),
+              ),
+            }
+          : {}),
+        ...(message.toolsAdded
+          ? { toolsAdded: message.toolsAdded.map((tool) => redactTool(tool, mask)) }
+          : {}),
+      };
+
     case 'user':
       return {
         ...message,
