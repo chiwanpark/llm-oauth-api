@@ -25,7 +25,7 @@ const freeGroup: ModelGroup = {
   name: 'free',
   members: [
     { providerId: 'github-copilot', modelId: 'gpt-5.4-mini' },
-    { providerId: 'openai-codex', modelId: 'gpt-5-mini' },
+    { providerId: 'openai', modelId: 'gpt-5-mini' },
   ],
 };
 
@@ -354,18 +354,18 @@ test('a provider entry covers that provider only', () => {
 });
 
 test('a provider:model entry matches one model', () => {
-  const redactor = scoped(['openai-codex:gpt-5.4'], [openaiKeyRule()]);
+  const redactor = scoped(['openai:gpt-5.4'], [openaiKeyRule()]);
 
-  assert.equal(redactor.covers(target('openai-codex', 'gpt-5.4')), true);
-  assert.equal(redactor.covers(target('openai-codex', 'gpt-5-mini')), false);
+  assert.equal(redactor.covers(target('openai', 'gpt-5.4')), true);
+  assert.equal(redactor.covers(target('openai', 'gpt-5-mini')), false);
 });
 
 test('a model glob matches within one provider', () => {
-  const redactor = scoped(['openai-codex:gpt-5*'], [openaiKeyRule()]);
+  const redactor = scoped(['openai:gpt-5*'], [openaiKeyRule()]);
 
-  assert.equal(redactor.covers(target('openai-codex', 'gpt-5.4')), true);
-  assert.equal(redactor.covers(target('openai-codex', 'gpt-5-mini')), true);
-  assert.equal(redactor.covers(target('openai-codex', 'o3')), false);
+  assert.equal(redactor.covers(target('openai', 'gpt-5.4')), true);
+  assert.equal(redactor.covers(target('openai', 'gpt-5-mini')), true);
+  assert.equal(redactor.covers(target('openai', 'o3')), false);
 });
 
 test('a wildcard provider matches a model id across providers', () => {
@@ -391,15 +391,15 @@ test('a group entry follows the requested group across its members', () => {
 
   // Either member serves the group, so the scope has to hold for both.
   assert.equal(redactor.covers(target('github-copilot', 'gpt-5.4-mini', 'free')), true);
-  assert.equal(redactor.covers(target('openai-codex', 'gpt-5-mini', 'free')), true);
+  assert.equal(redactor.covers(target('openai', 'gpt-5-mini', 'free')), true);
   // The same model requested directly is not the group.
-  assert.equal(redactor.covers(target('openai-codex', 'gpt-5-mini')), false);
+  assert.equal(redactor.covers(target('openai', 'gpt-5-mini')), false);
 });
 
 test('a group entry is read case-insensitively with _ as -', () => {
   const groups: ModelGroup[] = [{ name: 'fast-tier', members: freeGroup.members }];
   const redactor = scoped(['FAST_TIER'], [openaiKeyRule()], groups);
-  assert.equal(redactor.covers(target('openai-codex', 'gpt-5-mini', 'fast-tier')), true);
+  assert.equal(redactor.covers(target('openai', 'gpt-5-mini', 'fast-tier')), true);
 });
 
 test('several entries are a union', () => {
@@ -437,7 +437,7 @@ test('masks system prompt, user, assistant, and tool result turns', () => {
         role: 'assistant',
         content: [{ type: 'text', text: `assistant ${KEY}` }],
         api: 'openai-completions',
-        provider: 'openai-codex',
+        provider: 'openai',
         model: 'gpt-5.4',
         usage: {} as any,
         stopReason: 'stop',
@@ -548,7 +548,7 @@ test('masks tool call arguments at any depth while keeping the shape', () => {
           },
         ],
         api: 'openai-completions',
-        provider: 'openai-codex',
+        provider: 'openai',
         model: 'gpt-5.4',
         usage: {} as any,
         stopReason: 'toolUse',
@@ -809,7 +809,7 @@ function assistantReply(model: Model<any>, stopReason: 'stop' | 'error'): Assist
 
 const catalog: Model<any>[] = [
   { provider: 'github-copilot', id: 'gpt-5.4-mini', api: 'openai-completions' } as Model<any>,
-  { provider: 'openai-codex', id: 'gpt-5-mini', api: 'openai-completions' } as Model<any>,
+  { provider: 'openai', id: 'gpt-5-mini', api: 'openai-completions' } as Model<any>,
 ];
 
 test('the provider receives the masked context, not the original', async () => {
@@ -820,7 +820,7 @@ test('the provider receives the masked context, not the original', async () => {
     models,
     [],
     fakeRequest({
-      model: 'openai-codex:gpt-5-mini',
+      model: 'openai:gpt-5-mini',
       messages: [{ role: 'user', content: `my key is ${KEY}` }],
     }),
     fakeReply(),
@@ -839,7 +839,7 @@ test('the provider receives the masked context, not the original', async () => {
 test('fallback re-evaluates the scope against the second provider', async () => {
   // Only the fallback target is in scope, so the first attempt goes out unmasked
   // and the second must still be masked after the group moves on.
-  const redactor = scoped(['openai-codex'], [openaiKeyRule()]);
+  const redactor = scoped(['openai'], [openaiKeyRule()]);
   const { models, seen } = fakeModels(catalog, (model) =>
     assistantReply(model, model.provider === 'github-copilot' ? 'error' : 'stop'),
   );
@@ -892,7 +892,7 @@ test('without a redactor the context is forwarded unchanged', async () => {
     models,
     [],
     fakeRequest({
-      model: 'openai-codex:gpt-5-mini',
+      model: 'openai:gpt-5-mini',
       messages: [{ role: 'user', content: `key ${KEY}` }],
     }),
     fakeReply(),

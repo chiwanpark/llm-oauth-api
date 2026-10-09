@@ -12,7 +12,7 @@ const group: ModelGroup = {
   name: 'free',
   members: [
     { providerId: 'github-copilot', modelId: 'gpt-5.4-mini' },
-    { providerId: 'openai-codex', modelId: 'gpt-5-mini' },
+    { providerId: 'openai', modelId: 'gpt-5-mini' },
   ],
 };
 
@@ -20,7 +20,7 @@ function model(provider: string, id: string): Model<any> {
   return { provider, id, api: 'openai-completions' } as Model<any>;
 }
 
-const catalog = [model('github-copilot', 'gpt-5.4-mini'), model('openai-codex', 'gpt-5-mini')];
+const catalog = [model('github-copilot', 'gpt-5.4-mini'), model('openai', 'gpt-5-mini')];
 
 function assistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
   return {
@@ -134,47 +134,44 @@ test('falls back to the next provider when the first reports an upstream error',
   const { models, attempts } = fakeModels(async (target) =>
     target.provider === 'github-copilot'
       ? assistantMessage({ stopReason: 'error', errorMessage: 'rate limited' })
-      : assistantMessage({ provider: 'openai-codex' }),
+      : assistantMessage({ provider: 'openai' }),
   );
   const { request, warnings } = fakeRequest(chatBody());
   const { reply, state } = fakeReply();
 
   await runCompletion(models, [group], request, reply, chatAdapter);
 
-  assert.deepEqual(attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(attempts, ['github-copilot', 'openai']);
   assert.equal(state.status, 200);
-  assert.equal(state.payload.model, 'openai-codex:gpt-5-mini');
+  assert.equal(state.payload.model, 'openai:gpt-5-mini');
   assert.ok(warnings.some((message) => message.includes('falling back')));
 });
 
 test('falls back when the first provider throws', async () => {
   const { models, attempts } = fakeModels(async (target) => {
     if (target.provider === 'github-copilot') throw new Error('connection reset');
-    return assistantMessage({ provider: 'openai-codex' });
+    return assistantMessage({ provider: 'openai' });
   });
   const { request } = fakeRequest(chatBody());
   const { reply, state } = fakeReply();
 
   await runCompletion(models, [group], request, reply, chatAdapter);
 
-  assert.deepEqual(attempts, ['github-copilot', 'openai-codex']);
-  assert.equal(state.payload.model, 'openai-codex:gpt-5-mini');
+  assert.deepEqual(attempts, ['github-copilot', 'openai']);
+  assert.equal(state.payload.model, 'openai:gpt-5-mini');
 });
 
 test('skips unconfigured members without consuming an attempt', async () => {
-  const { models, attempts } = fakeModels(
-    async () => assistantMessage({ provider: 'openai-codex' }),
-    {
-      unconfigured: ['github-copilot'],
-    },
-  );
+  const { models, attempts } = fakeModels(async () => assistantMessage({ provider: 'openai' }), {
+    unconfigured: ['github-copilot'],
+  });
   const { request } = fakeRequest(chatBody());
   const { reply, state } = fakeReply();
 
   await runCompletion(models, [group], request, reply, chatAdapter);
 
-  assert.deepEqual(attempts, ['openai-codex']);
-  assert.equal(state.payload.model, 'openai-codex:gpt-5-mini');
+  assert.deepEqual(attempts, ['openai']);
+  assert.equal(state.payload.model, 'openai:gpt-5-mini');
 });
 
 test('stops at the first success without trying later members', async () => {
@@ -210,15 +207,15 @@ test('reports every failure once the group is exhausted', async () => {
 
   await runCompletion(models, [group], request, reply, chatAdapter);
 
-  assert.deepEqual(attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(attempts, ['github-copilot', 'openai']);
   assert.equal(state.status, 502);
   assert.match(state.payload.error.message, /github-copilot:gpt-5\.4-mini: github-copilot down/);
-  assert.match(state.payload.error.message, /openai-codex:gpt-5-mini: openai-codex down/);
+  assert.match(state.payload.error.message, /openai:gpt-5-mini: openai down/);
 });
 
 test('reports a configuration error when no member is configured', async () => {
   const { models, attempts } = fakeModels(async () => assistantMessage(), {
-    unconfigured: ['github-copilot', 'openai-codex'],
+    unconfigured: ['github-copilot', 'openai'],
   });
   const { request } = fakeRequest(chatBody());
   const { reply, state } = fakeReply();
@@ -289,7 +286,7 @@ test('preserves single-model status codes for non-group requests', async () => {
 });
 
 test('streaming fails over when the first provider errors before sending anything', async () => {
-  const message = assistantMessage({ provider: 'openai-codex' });
+  const message = assistantMessage({ provider: 'openai' });
   const { models, attempts } = fakeModels(async () => message, {
     stream: (target) =>
       target.provider === 'github-copilot'
@@ -310,7 +307,7 @@ test('streaming fails over when the first provider errors before sending anythin
 
   await runCompletion(models, [group], request, reply, chatAdapter);
 
-  assert.deepEqual(attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(attempts, ['github-copilot', 'openai']);
   // Nothing from the failed provider leaked into the stream.
   assert.ok(!state.sse.includes('upstream 500'));
   assert.ok(state.sse.includes('hello'));
@@ -352,7 +349,7 @@ test('sends each provider the model id that provider actually uses', async () =>
     seen.push(`${target.provider}:${target.id}`);
     return target.provider === 'github-copilot'
       ? assistantMessage({ stopReason: 'error', errorMessage: 'rate limited' })
-      : assistantMessage({ provider: 'openai-codex', model: 'gpt-5-mini' });
+      : assistantMessage({ provider: 'openai', model: 'gpt-5-mini' });
   });
   const { request } = fakeRequest(chatBody());
   const { reply, state } = fakeReply();
@@ -360,6 +357,6 @@ test('sends each provider the model id that provider actually uses', async () =>
   await runCompletion(models, [group], request, reply, chatAdapter);
 
   // The group is addressed by one name, but each upstream keeps its own id.
-  assert.deepEqual(seen, ['github-copilot:gpt-5.4-mini', 'openai-codex:gpt-5-mini']);
-  assert.equal(state.payload.model, 'openai-codex:gpt-5-mini');
+  assert.deepEqual(seen, ['github-copilot:gpt-5.4-mini', 'openai:gpt-5-mini']);
+  assert.equal(state.payload.model, 'openai:gpt-5-mini');
 });

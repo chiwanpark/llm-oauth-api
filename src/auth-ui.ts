@@ -3,23 +3,30 @@ import { confirm, input, password, select } from '@inquirer/prompts';
 import type { AuthEvent, AuthPrompt, ProviderAuthInteraction } from '@earendil-works/pi-ai';
 
 async function promptValue(prompt: AuthPrompt): Promise<string> {
+  const context = prompt.signal ? { signal: prompt.signal } : {};
   switch (prompt.type) {
     case 'text':
     case 'manual_code':
-      return input({
-        message: prompt.message,
-        ...(prompt.placeholder ? { default: prompt.placeholder } : {}),
-      });
+      return input(
+        {
+          message: prompt.message,
+          ...(prompt.placeholder ? { default: prompt.placeholder } : {}),
+        },
+        context,
+      );
     case 'secret':
-      return password({ message: prompt.message });
+      return password({ message: prompt.message }, context);
     case 'select': {
-      const value = await select({
-        message: prompt.message,
-        choices: prompt.options.map((option) => ({
-          name: option.label + (option.description ? ` — ${option.description}` : ''),
-          value: option.id,
-        })),
-      });
+      const value = await select(
+        {
+          message: prompt.message,
+          choices: prompt.options.map((option) => ({
+            name: option.label + (option.description ? ` — ${option.description}` : ''),
+            value: option.id,
+          })),
+        },
+        context,
+      );
       return value;
     }
   }

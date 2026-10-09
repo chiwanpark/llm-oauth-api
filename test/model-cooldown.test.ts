@@ -19,7 +19,7 @@ const group: ModelGroup = {
   name: 'free',
   members: [
     { providerId: 'github-copilot', modelId: 'gpt-5.4-mini' },
-    { providerId: 'openai-codex', modelId: 'gpt-5-mini' },
+    { providerId: 'openai', modelId: 'gpt-5-mini' },
   ],
 };
 
@@ -29,7 +29,7 @@ function model(provider: string, id: string): Model<any> {
   return { provider, id, api: 'openai-completions' } as Model<any>;
 }
 
-const catalog = [model('github-copilot', 'gpt-5.4-mini'), model('openai-codex', 'gpt-5-mini')];
+const catalog = [model('github-copilot', 'gpt-5.4-mini'), model('openai', 'gpt-5-mini')];
 
 function assistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
   return {
@@ -166,7 +166,7 @@ test('passes over a member that failed on an earlier request', async () => {
   const failFirst: Behavior = async (target) =>
     target.provider === 'github-copilot'
       ? assistantMessage({ stopReason: 'error', errorMessage: 'rate limited' })
-      : assistantMessage({ provider: 'openai-codex', model: 'gpt-5-mini' });
+      : assistantMessage({ provider: 'openai', model: 'gpt-5-mini' });
 
   const first = fakeModels(failFirst);
   const firstRequest = fakeRequest(chatBody());
@@ -179,7 +179,7 @@ test('passes over a member that failed on an earlier request', async () => {
     chatAdapter,
     cooldown,
   );
-  assert.deepEqual(first.attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(first.attempts, ['github-copilot', 'openai']);
 
   // Same failure, one second later: the group starts where it left off.
   time.advance(1_000);
@@ -195,9 +195,9 @@ test('passes over a member that failed on an earlier request', async () => {
     cooldown,
   );
 
-  assert.deepEqual(second.attempts, ['openai-codex']);
+  assert.deepEqual(second.attempts, ['openai']);
   assert.equal(secondReply.state.status, 200);
-  assert.equal(secondReply.state.payload.model, 'openai-codex:gpt-5-mini');
+  assert.equal(secondReply.state.payload.model, 'openai:gpt-5-mini');
   assert.ok(secondRequest.logs.some((message) => message.includes('recently failed')));
 });
 
@@ -217,7 +217,7 @@ test('tries the model again once the cooldown window passes', async () => {
     chatAdapter,
     cooldown,
   );
-  assert.deepEqual(first.attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(first.attempts, ['github-copilot', 'openai']);
 
   time.advance(COOLDOWN_MS);
   const second = fakeModels(async () => assistantMessage());
@@ -264,7 +264,7 @@ test('tries every member when they are all cooling down', async () => {
     chatAdapter,
     cooldown,
   );
-  assert.deepEqual(first.attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(first.attempts, ['github-copilot', 'openai']);
 
   // Skipping everything would take the group offline for the rest of the
   // window, so a request with nothing ready probes the members instead.
@@ -272,7 +272,7 @@ test('tries every member when they are all cooling down', async () => {
   const second = fakeModels(async (target) =>
     target.provider === 'github-copilot'
       ? assistantMessage({ stopReason: 'error', errorMessage: 'still down' })
-      : assistantMessage({ provider: 'openai-codex', model: 'gpt-5-mini' }),
+      : assistantMessage({ provider: 'openai', model: 'gpt-5-mini' }),
   );
   const secondReply = fakeReply();
   await runCompletion(
@@ -284,8 +284,8 @@ test('tries every member when they are all cooling down', async () => {
     cooldown,
   );
 
-  assert.deepEqual(second.attempts, ['github-copilot', 'openai-codex']);
-  assert.equal(secondReply.state.payload.model, 'openai-codex:gpt-5-mini');
+  assert.deepEqual(second.attempts, ['github-copilot', 'openai']);
+  assert.equal(secondReply.state.payload.model, 'openai:gpt-5-mini');
 });
 
 test('reports the skipped member when the rest of the group fails', async () => {
@@ -295,7 +295,7 @@ test('reports the skipped member when the rest of the group fails', async () => 
   const first = fakeModels(async (target) =>
     target.provider === 'github-copilot'
       ? assistantMessage({ stopReason: 'error', errorMessage: 'rate limited' })
-      : assistantMessage({ provider: 'openai-codex', model: 'gpt-5-mini' }),
+      : assistantMessage({ provider: 'openai', model: 'gpt-5-mini' }),
   );
   await runCompletion(
     first.models,
@@ -309,7 +309,7 @@ test('reports the skipped member when the rest of the group fails', async () => 
   time.advance(60_000);
   const second = fakeModels(async () =>
     assistantMessage({
-      provider: 'openai-codex',
+      provider: 'openai',
       stopReason: 'error',
       errorMessage: 'upstream 500',
     }),
@@ -324,13 +324,13 @@ test('reports the skipped member when the rest of the group fails', async () => 
     cooldown,
   );
 
-  assert.deepEqual(second.attempts, ['openai-codex']);
+  assert.deepEqual(second.attempts, ['openai']);
   assert.equal(secondReply.state.status, 502);
   const message = secondReply.state.payload.error.message;
   // The skipped member is part of the explanation, with what is left to wait.
   assert.match(message, /github-copilot:gpt-5\.4-mini: skipped for another 4m/);
   assert.match(message, /rate limited/);
-  assert.match(message, /openai-codex:gpt-5-mini: upstream 500/);
+  assert.match(message, /openai:gpt-5-mini: upstream 500/);
 });
 
 test('a client disconnect does not put the model on cooldown', async () => {
@@ -369,7 +369,7 @@ test('an unconfigured member is not put on cooldown', async () => {
   const time = clock();
   const cooldown = createModelCooldown({ cooldownMs: COOLDOWN_MS, now: time.now });
 
-  const first = fakeModels(async () => assistantMessage({ provider: 'openai-codex' }), {
+  const first = fakeModels(async () => assistantMessage({ provider: 'openai' }), {
     unconfigured: ['github-copilot'],
   });
   await runCompletion(
@@ -400,7 +400,7 @@ test('an unconfigured member is not put on cooldown', async () => {
 test('a stream that fails before sending anything puts the model on cooldown', async () => {
   const time = clock();
   const cooldown = createModelCooldown({ cooldownMs: COOLDOWN_MS, now: time.now });
-  const message = assistantMessage({ provider: 'openai-codex', model: 'gpt-5-mini' });
+  const message = assistantMessage({ provider: 'openai', model: 'gpt-5-mini' });
   const streams = (target: Model<any>) =>
     target.provider === 'github-copilot'
       ? (async function* () {
@@ -424,7 +424,7 @@ test('a stream that fails before sending anything puts the model on cooldown', a
     chatAdapter,
     cooldown,
   );
-  assert.deepEqual(first.attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(first.attempts, ['github-copilot', 'openai']);
 
   const second = fakeModels(async () => message, { stream: streams });
   const secondReply = fakeReply();
@@ -437,7 +437,7 @@ test('a stream that fails before sending anything puts the model on cooldown', a
     cooldown,
   );
 
-  assert.deepEqual(second.attempts, ['openai-codex']);
+  assert.deepEqual(second.attempts, ['openai']);
   assert.ok(secondReply.state.sse.includes('hello'));
 });
 
@@ -474,7 +474,7 @@ test('a single-model request is never skipped but still records the failure', as
   assert.equal(again.state.payload.error.message, 'rate limited');
 
   // ...but the group knows the same upstream model is unhealthy.
-  const grouped = fakeModels(async () => assistantMessage({ provider: 'openai-codex' }));
+  const grouped = fakeModels(async () => assistantMessage({ provider: 'openai' }));
   await runCompletion(
     grouped.models,
     [group],
@@ -483,7 +483,7 @@ test('a single-model request is never skipped but still records the failure', as
     chatAdapter,
     cooldown,
   );
-  assert.deepEqual(grouped.attempts, ['openai-codex']);
+  assert.deepEqual(grouped.attempts, ['openai']);
 });
 
 test('a plain model request runs even while that model is cooling down', async () => {
@@ -493,10 +493,10 @@ test('a plain model request runs even while that model is cooling down', async (
   const failing = fakeModels(async (target) =>
     target.provider === 'github-copilot'
       ? assistantMessage({ stopReason: 'error', errorMessage: 'rate limited' })
-      : assistantMessage({ provider: 'openai-codex', model: 'gpt-5-mini' }),
+      : assistantMessage({ provider: 'openai', model: 'gpt-5-mini' }),
   );
   await runOnce(cooldown, failing, chatBody());
-  assert.deepEqual(failing.attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(failing.attempts, ['github-copilot', 'openai']);
 
   // The group skips it, but a request that names it has nowhere else to go, so
   // skipping would turn the cooldown into a 5-minute outage for that model.
@@ -528,13 +528,13 @@ test('a plain model request that succeeds takes the model off cooldown', async (
   const failing = fakeModels(async (target) =>
     target.provider === 'github-copilot'
       ? assistantMessage({ stopReason: 'error', errorMessage: 'rate limited' })
-      : assistantMessage({ provider: 'openai-codex', model: 'gpt-5-mini' }),
+      : assistantMessage({ provider: 'openai', model: 'gpt-5-mini' }),
   );
   await runOnce(cooldown, failing, chatBody());
 
-  const skipping = fakeModels(async () => assistantMessage({ provider: 'openai-codex' }));
+  const skipping = fakeModels(async () => assistantMessage({ provider: 'openai' }));
   await runOnce(cooldown, skipping, chatBody());
-  assert.deepEqual(skipping.attempts, ['openai-codex']);
+  assert.deepEqual(skipping.attempts, ['openai']);
 
   // A direct request proves the model answers again, well inside the window.
   time.advance(1_000);
@@ -556,7 +556,7 @@ test('a zero window disables skipping', async () => {
   const behavior: Behavior = async (target) =>
     target.provider === 'github-copilot'
       ? assistantMessage({ stopReason: 'error', errorMessage: 'rate limited' })
-      : assistantMessage({ provider: 'openai-codex', model: 'gpt-5-mini' });
+      : assistantMessage({ provider: 'openai', model: 'gpt-5-mini' });
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const round = fakeModels(behavior);
@@ -568,7 +568,7 @@ test('a zero window disables skipping', async () => {
       chatAdapter,
       cooldown,
     );
-    assert.deepEqual(round.attempts, ['github-copilot', 'openai-codex']);
+    assert.deepEqual(round.attempts, ['github-copilot', 'openai']);
   }
 });
 
@@ -595,9 +595,9 @@ test('records a streaming failure reported on a plain model request', async () =
   assert.deepEqual(failing.attempts, ['github-copilot']);
   assert.ok(state.sse.includes('upstream 500'));
 
-  const grouped = fakeModels(async () => assistantMessage({ provider: 'openai-codex' }));
+  const grouped = fakeModels(async () => assistantMessage({ provider: 'openai' }));
   await runOnce(cooldown, grouped, chatBody());
-  assert.deepEqual(grouped.attempts, ['openai-codex']);
+  assert.deepEqual(grouped.attempts, ['openai']);
 });
 
 test('records a stream that broke after output reached the client', async () => {
@@ -626,9 +626,9 @@ test('records a stream that broke after output reached the client', async () => 
   assert.ok(state.sse.includes('died mid-stream'));
 
   // The next request has no reason to expect better from that model.
-  const second = fakeModels(async () => assistantMessage({ provider: 'openai-codex' }));
+  const second = fakeModels(async () => assistantMessage({ provider: 'openai' }));
   await runOnce(cooldown, second, chatBody());
-  assert.deepEqual(second.attempts, ['openai-codex']);
+  assert.deepEqual(second.attempts, ['openai']);
 });
 
 test('a completed stream clears an earlier failure', async () => {
@@ -641,7 +641,7 @@ test('a completed stream clears an earlier failure', async () => {
     assistantMessage({ stopReason: 'error', errorMessage: `${target.provider} down` }),
   );
   await runOnce(cooldown, broken, chatBody());
-  assert.deepEqual(broken.attempts, ['github-copilot', 'openai-codex']);
+  assert.deepEqual(broken.attempts, ['github-copilot', 'openai']);
 
   time.advance(1_000);
   const recovered = fakeModels(async () => message, {

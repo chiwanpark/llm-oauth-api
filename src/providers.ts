@@ -1,10 +1,10 @@
-import type { Model, Provider } from '@earendil-works/pi-ai';
+import type { Model, OAuthCredential, Provider } from '@earendil-works/pi-ai';
 import { anthropicProvider } from '@earendil-works/pi-ai/providers/anthropic';
 import { cerebrasProvider } from '@earendil-works/pi-ai/providers/cerebras';
 import { githubCopilotProvider } from '@earendil-works/pi-ai/providers/github-copilot';
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { nvidiaProvider } from '@earendil-works/pi-ai/providers/nvidia';
-import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { opencodeGoProvider } from '@earendil-works/pi-ai/providers/opencode-go';
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 
@@ -14,7 +14,7 @@ export type SupportedProviderId =
   | 'github-copilot'
   | 'google'
   | 'nvidia'
-  | 'openai-codex'
+  | 'openai'
   | 'opencode-go'
   | 'openrouter';
 
@@ -37,13 +37,39 @@ function withOpenRouterAttribution(): Provider {
   };
 }
 
+export const DEVICE_ID_KEY = 'deviceId';
+
+export function storedDeviceId(credential: OAuthCredential | undefined): string | undefined {
+  const deviceId = credential?.[DEVICE_ID_KEY];
+  return typeof deviceId === 'string' ? deviceId : undefined;
+}
+
+export function withPreservedDeviceId(provider: Provider): Provider {
+  const oauth = provider.auth.oauth;
+  if (!oauth) return provider;
+  return {
+    ...provider,
+    auth: {
+      ...provider.auth,
+      oauth: {
+        ...oauth,
+        refresh: async (credential: OAuthCredential, signal: AbortSignal) => {
+          const refreshed = await oauth.refresh(credential, signal);
+          const deviceId = storedDeviceId(credential);
+          return deviceId ? { ...refreshed, [DEVICE_ID_KEY]: deviceId } : refreshed;
+        },
+      },
+    },
+  };
+}
+
 const providerFactories: Record<SupportedProviderId, () => Provider> = {
   anthropic: anthropicProvider,
   cerebras: cerebrasProvider,
   'github-copilot': githubCopilotProvider,
   google: googleProvider,
   nvidia: nvidiaProvider,
-  'openai-codex': openaiCodexProvider,
+  openai: () => withPreservedDeviceId(openaiProvider()),
   'opencode-go': opencodeGoProvider,
   openrouter: withOpenRouterAttribution,
 };

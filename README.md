@@ -22,7 +22,7 @@ OpenAI-compatible HTTP API backed by `@earendil-works/pi-ai`.
 - `github-copilot`
 - `google` (API-key based)
 - `nvidia` (API-key based)
-- `openai-codex`
+- `openai` (OAuth or API-key based)
 - `opencode-go` (API-key based)
 - `openrouter` (OAuth or API-key based)
 
@@ -58,7 +58,7 @@ pnpm loa login cerebras --auth-file ./auth.yaml
 pnpm loa login github-copilot --auth-file ./auth.yaml
 pnpm loa login google --auth-file ./auth.yaml
 pnpm loa login nvidia --auth-file ./auth.yaml
-pnpm loa login openai-codex --auth-file ./auth.yaml
+pnpm loa login openai --auth-file ./auth.yaml
 pnpm loa login opencode-go --auth-file ./auth.yaml
 pnpm loa login openrouter --auth-file ./auth.yaml
 ```
@@ -68,6 +68,7 @@ For NVIDIA NIM, this stores an NVIDIA API key. You can also provide it with the 
 For Cerebras, this stores a Cerebras API key. You can also provide it with the `CEREBRAS_API_KEY` environment variable.
 For OpenRouter, the default login runs an OAuth flow that mints a durable key on your account. You
 can also provide an existing key with the `OPENROUTER_API_KEY` environment variable.
+For OpenAI, the default login is Sign in with ChatGPT, which uses your ChatGPT subscription. It listens for the browser callback on `127.0.0.1:1455`; on a headless machine, paste the final redirect URL from the browser instead. You can also provide an API key with the `OPENAI_API_KEY` environment variable.
 
 Providers that support both flows default to OAuth. Use `--api-key` to store a key instead:
 
@@ -99,7 +100,7 @@ Optional provider filtering:
 ```bash
 pnpm loa serve \
   --auth-file ./auth.yaml \
-  --providers anthropic,cerebras,github-copilot,google,nvidia,openai-codex,openrouter
+  --providers anthropic,cerebras,github-copilot,google,nvidia,openai,openrouter
 ```
 
 While the server is running, it checks stored OAuth credentials for enabled providers every 60
@@ -127,7 +128,7 @@ file that maps each group name to its members, and point the server at it with `
 ```yaml
 free:
   - github-copilot:gpt-5.4-mini
-  - openai-codex:gpt-5-mini
+  - openai:gpt-5-mini
 ```
 
 ```bash
@@ -139,7 +140,7 @@ problem in it — an unknown provider, a provider left out of `--providers`, a r
 that does not exist — stops the server with an error naming the file.
 
 The group name is itself the model id. Requesting `free` tries `github-copilot:gpt-5.4-mini` first
-and falls back to `openai-codex:gpt-5-mini` if that attempt fails:
+and falls back to `openai:gpt-5-mini` if that attempt fails:
 
 ```bash
 curl http://localhost:3000/v1/chat/completions \
@@ -154,7 +155,7 @@ another group, which is spliced into its parent at that position:
 ```yaml
 fast:
   - github-copilot:gpt-5-mini
-  - openai-codex:gpt-5.4-mini
+  - openai:gpt-5.4-mini
 smart:
   - anthropic:claude-sonnet-4-5
   - opencode-go:claude-sonnet-4-5
@@ -163,7 +164,7 @@ all:
   - google:gemini-2.5-pro
 ```
 
-Here `all` tries `github-copilot:gpt-5-mini`, then `openai-codex:gpt-5.4-mini`, then
+Here `all` tries `github-copilot:gpt-5-mini`, then `openai:gpt-5.4-mini`, then
 `google:gemini-2.5-pro`, and `fast` remains requestable on its own. Nesting may go any number of
 levels deep and groups may be declared in any order; a cycle is rejected at startup.
 
@@ -190,7 +191,7 @@ Agents paste secrets into a conversation without meaning to: a tool result holdi
 ```yaml
 models:
   - anthropic
-  - 'openai-codex:gpt-5*'
+  - 'openai:gpt-5*'
   - free
 replacement: '<redacted:{name}>'
 rules:
@@ -275,7 +276,7 @@ An entry in `models` follows the convention of the groups file: an entry with a 
 | `*`                           | every model                                                 |
 | `anthropic`                   | every model from that provider                              |
 | `anthropic:claude-sonnet-4-5` | that one model                                              |
-| `openai-codex:gpt-5*`         | models matching the glob within that provider               |
+| `openai:gpt-5*`               | models matching the glob within that provider               |
 | `*:claude-sonnet-4-5`         | that model id from any provider that publishes it           |
 | `free`                        | requests for the group `free`, whichever member serves them |
 
@@ -321,7 +322,7 @@ Models are exposed as `provider:model`, for example:
 - `github-copilot:gpt-5`
 - `google:gemini-2.5-pro`
 - `nvidia:meta/llama-3.3-70b-instruct`
-- `openai-codex:gpt-5.4`
+- `openai:gpt-5.4`
 - `opencode-go:claude-sonnet-4-5`
 - `openrouter:anthropic/claude-sonnet-4.5`
 
@@ -337,7 +338,7 @@ curl http://localhost:3000/v1/chat/completions \
   -H "Authorization: Bearer $LLM_OAUTH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "openai-codex:gpt-5.4",
+    "model": "openai:gpt-5.4",
     "messages": [
       {"role": "user", "content": "Hello"}
     ],
@@ -355,7 +356,7 @@ curl http://localhost:3000/v1/responses \
   -H "Authorization: Bearer $LLM_OAUTH_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "openai-codex:gpt-5.4",
+    "model": "openai:gpt-5.4",
     "input": "Write a haiku about OAuth",
     "reasoning": {"effort": "high"},
     "stream": true

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { randomUUID } from 'node:crypto';
+
 import { Command, Option } from 'commander';
 
 import { createCliAuthCallbacks, confirmOverwrite } from './auth-ui.js';
@@ -13,8 +15,10 @@ import { loadRedactionConfig, NO_REDACTION } from './redaction.js';
 import { DEFAULT_MODEL_COOLDOWN_MS, parseCooldownSeconds } from './model-cooldown.js';
 import {
   createSupportedProvider,
+  DEVICE_ID_KEY,
   getSupportedProviderIds,
   resolveSupportedProviderIds,
+  storedDeviceId,
 } from './providers.js';
 import { startServer } from './server.js';
 
@@ -68,8 +72,8 @@ program
       '  e.g.\n' +
       '    free:\n' +
       '      - github-copilot:gpt-5.4-mini\n' +
-      '      - openai-codex:gpt-5-mini\n' +
-      '  makes the model "free" try github-copilot first and fall back to openai-codex.\n' +
+      '      - openai:gpt-5-mini\n' +
+      '  makes the model "free" try github-copilot first and fall back to openai.\n' +
       '  An entry without a ":" names another group and is flattened into its parent.\n' +
       '  A member that fails is skipped for --model-cooldown seconds afterwards.\n' +
       '\nRedaction:\n' +
@@ -143,8 +147,12 @@ program
     } else if (options.apiKey) {
       throw new Error(`Provider ${provider.id} does not support API-key login`);
     } else if (provider.auth.oauth) {
+      let deviceId = existing?.type === 'oauth' ? storedDeviceId(existing) : undefined;
+      const getDeviceId = () => (deviceId ??= randomUUID());
+      const loggedIn = await provider.auth.oauth.login(createCliAuthCallbacks(), { getDeviceId });
       credential = {
-        ...(await provider.auth.oauth.login(createCliAuthCallbacks())),
+        ...loggedIn,
+        ...(deviceId ? { [DEVICE_ID_KEY]: deviceId } : {}),
         type: 'oauth' as const,
       };
     } else {

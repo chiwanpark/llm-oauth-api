@@ -53,13 +53,13 @@ const freeGroup: ModelGroup = {
   name: 'free',
   members: [
     { providerId: 'github-copilot', modelId: 'gpt-5.4-mini' },
-    { providerId: 'openai-codex', modelId: 'gpt-5-mini' },
+    { providerId: 'openai', modelId: 'gpt-5-mini' },
   ],
 };
 
 test('parses per-provider model names in declaration order', () => {
   const groups = parseModelGroups(
-    { free: ['github-copilot:gpt-5.4-mini', 'openai-codex:gpt-5-mini'] },
+    { free: ['github-copilot:gpt-5.4-mini', 'openai:gpt-5-mini'] },
     allProviders,
   );
 
@@ -176,7 +176,7 @@ test('rejects a group whose name collides with a provider name', () => {
   );
   // The collision is judged on the normalized name, not the raw key.
   assert.throws(
-    () => parseModelGroups({ OPENAI_CODEX: ['nvidia:x'] }, allProviders),
+    () => parseModelGroups({ OPENCODE_GO: ['nvidia:x'] }, allProviders),
     /collides with a provider name/,
   );
 });
@@ -249,27 +249,27 @@ test('rejects a comma-separated entry by pointing at the array syntax', () => {
 
 test('resolves a group name to each member model in order', () => {
   const copilot = model('github-copilot', 'gpt-5.4-mini');
-  const codex = model('openai-codex', 'gpt-5-mini');
+  const openai = model('openai', 'gpt-5-mini');
 
-  const candidates = resolveModelCandidates(modelsWith([codex, copilot]), [freeGroup], 'free');
+  const candidates = resolveModelCandidates(modelsWith([openai, copilot]), [freeGroup], 'free');
 
   // Group order wins over catalog order, and each provider keeps its own name.
   assert.deepEqual(
     candidates.map((entry) => `${entry.provider}:${entry.id}`),
-    ['github-copilot:gpt-5.4-mini', 'openai-codex:gpt-5-mini'],
+    ['github-copilot:gpt-5.4-mini', 'openai:gpt-5-mini'],
   );
 });
 
 test('skips members whose provider does not publish the named model', () => {
   const candidates = resolveModelCandidates(
-    modelsWith([model('openai-codex', 'gpt-5-mini'), model('github-copilot', 'some-other-model')]),
+    modelsWith([model('openai', 'gpt-5-mini'), model('github-copilot', 'some-other-model')]),
     [freeGroup],
     'free',
   );
 
   assert.deepEqual(
     candidates.map((entry) => entry.provider),
-    ['openai-codex'],
+    ['openai'],
   );
 });
 
@@ -295,7 +295,7 @@ test('matches group names case-insensitively', () => {
 test('lists a group as one virtual model when a member is available', () => {
   const entries = groupModelEntries(
     [freeGroup],
-    [model('openai-codex', 'gpt-5-mini'), model('google', 'gemini-2.5-pro')],
+    [model('openai', 'gpt-5-mini'), model('google', 'gemini-2.5-pro')],
   );
 
   assert.deepEqual(entries, [{ id: 'free', object: 'model', created: 0, owned_by: 'group' }]);
@@ -308,13 +308,13 @@ test('hides a group when no member can serve it', () => {
 });
 
 test('describes a group as its provider:model members', () => {
-  assert.equal(describeGroup(freeGroup), 'github-copilot:gpt-5.4-mini, openai-codex:gpt-5-mini');
+  assert.equal(describeGroup(freeGroup), 'github-copilot:gpt-5.4-mini, openai:gpt-5-mini');
 });
 
 test('flattens a nested group into its parent in declaration order', () => {
   const groups = parseModelGroups(
     {
-      fast: ['github-copilot:gpt-5-mini', 'openai-codex:gpt-5.4-mini'],
+      fast: ['github-copilot:gpt-5-mini', 'openai:gpt-5.4-mini'],
       all: ['google:gemini-2.5-pro', 'fast', 'nvidia:some-model'],
     },
     allProviders,
@@ -324,13 +324,13 @@ test('flattens a nested group into its parent in declaration order', () => {
   assert.deepEqual(findGroup(groups, 'all')?.members, [
     { providerId: 'google', modelId: 'gemini-2.5-pro' },
     { providerId: 'github-copilot', modelId: 'gpt-5-mini' },
-    { providerId: 'openai-codex', modelId: 'gpt-5.4-mini' },
+    { providerId: 'openai', modelId: 'gpt-5.4-mini' },
     { providerId: 'nvidia', modelId: 'some-model' },
   ]);
   // The nested group stays independently requestable.
   assert.deepEqual(findGroup(groups, 'fast')?.members, [
     { providerId: 'github-copilot', modelId: 'gpt-5-mini' },
-    { providerId: 'openai-codex', modelId: 'gpt-5.4-mini' },
+    { providerId: 'openai', modelId: 'gpt-5.4-mini' },
   ]);
 });
 
