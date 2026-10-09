@@ -6,6 +6,7 @@ import type {
   Message,
   Model,
   MutableModels,
+  SystemMessage,
   TextContent,
   ThinkingContent,
   Tool,
@@ -175,11 +176,14 @@ export async function buildChatContext(model: Model<any>, body: any): Promise<Co
     const timestamp = now + index;
     switch (message?.role) {
       case 'system':
-      case 'developer': {
-        const text = await contentToPlainText(message.content);
-        if (text) systemPrompts.push(text);
+      case 'developer':
+        addSystemText(
+          await contentToPlainText(message.content),
+          systemPrompts,
+          messages,
+          timestamp,
+        );
         break;
-      }
       case 'user':
         messages.push({
           role: 'user',
@@ -267,8 +271,7 @@ export async function buildResponsesContext(model: Model<any>, body: any): Promi
       if (item?.type === 'message' || item?.role) {
         const role = item.role;
         if (role === 'system' || role === 'developer') {
-          const text = await contentToPlainText(item.content);
-          if (text) systemPrompts.push(text);
+          addSystemText(await contentToPlainText(item.content), systemPrompts, messages, timestamp);
           continue;
         }
         if (role === 'user') {
@@ -303,6 +306,20 @@ export async function buildResponsesContext(model: Model<any>, body: any): Promi
   if (systemPrompt) context.systemPrompt = systemPrompt;
   if (tools) context.tools = tools;
   return context;
+}
+
+function addSystemText(
+  text: string,
+  systemPrompts: string[],
+  messages: Message[],
+  timestamp: number,
+): void {
+  if (!text.trim()) return;
+  if (messages.length) {
+    messages.push({ role: 'system', content: text, timestamp } satisfies SystemMessage);
+  } else {
+    systemPrompts.push(text);
+  }
 }
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
